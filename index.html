@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SL Gateway</title>
+    <title>SL Biometric Gateway</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background: #4e73df; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
@@ -10,37 +10,50 @@
 </head>
 <body>
     <div class="bridge-card">
-        <h4 class="fw-bold">Biometric Scan</h4>
-        <p class="text-muted">Touch the sensor. PINs are not allowed.</p>
-        <button id="btn" class="btn btn-primary w-100 fw-bold py-3" onclick="executeScan()">SCAN FINGER</button>
+        <h4 class="fw-bold text-primary">Biometric Scan</h4>
+        <p class="text-muted small">Place your finger on the sensor. <br><b>PIN/Password bypass is disabled.</b></p>
+        <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
         <div id="status" class="mt-3 small text-danger fw-bold"></div>
     </div>
+
     <script>
         async function executeScan() {
             const btn = document.getElementById('btn');
             const params = new URLSearchParams(window.location.search);
             btn.disabled = true;
+            btn.innerText = "WAITING FOR TOUCH...";
 
             try {
                 const options = {
                     publicKey: {
                         challenge: new Uint8Array(32),
                         rp: { name: "SL_Logistics" },
-                        user: { id: new TextEncoder().encode(params.get('icid')), name: "user", displayName: "User" },
+                        user: { 
+                            id: new TextEncoder().encode(params.get('icid')), 
+                            name: "worker_" + params.get('icid'), 
+                            displayName: "ID: " + params.get('icid') 
+                        },
                         pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-                        authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+                        authenticatorSelection: { 
+                            authenticatorAttachment: "platform",
+                            userVerification: "required" // Strictly enforces Fingerprint/PIN
+                        },
                         timeout: 60000
                     }
                 };
 
-                const cred = await navigator.credentials.create(options);
-                // Credential ID is the only thing that stays 100% the same for a finger
-                const cId = btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)));
-                const pubKey = btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.attestationObject)));
+                const credential = await navigator.credentials.create(options);
                 
-                window.location.href = `${params.get('returnUrl')}?result=${encodeURIComponent(pubKey)}&credId=${encodeURIComponent(cId)}&icid=${params.get('icid')}&action=${params.get('action')}`;
+                // CredId is the unique identifier for the specific finger on this device
+                const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
+                const attestation = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.response.attestationObject)));
+                
+                // Redirect with the Credential ID for duplicate checking
+                window.location.href = `${params.get('returnUrl')}?result=${encodeURIComponent(attestation)}&credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${params.get('action')}`;
+
             } catch (e) {
                 btn.disabled = false;
+                btn.innerText = "RETRY SCAN";
                 document.getElementById('status').innerText = e.message;
             }
         }
