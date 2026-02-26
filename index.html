@@ -1,21 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SL Biometric Bridge</title>
+    <title>SL Biometric Gateway</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background: #4e73df; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: 'Segoe UI', sans-serif; margin: 0; }
         .bridge-card { background: white; color: #333; padding: 40px; border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.3); text-align: center; max-width: 400px; }
-        .sensor-icon { font-size: 60px; color: #4e73df; margin-bottom: 20px; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        .sensor-icon { font-size: 60px; color: #4e73df; margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <div class="bridge-card">
         <div class="sensor-icon">👆</div>
-        <h4 class="fw-bold">Biometric Bridge</h4>
-        <p class="text-muted small">Terminal Secure. Please click the button below and then touch your <b>Secureye sensor</b> when prompted.</p>
-        <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">START SCAN</button>
+        <h4 class="fw-bold">SL Gateway</h4>
+        <p class="text-muted small">Touch the <b>Secureye sensor</b> to verify identity.</p>
+        <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
         <div id="status" class="mt-3 small text-danger fw-bold"></div>
     </div>
 
@@ -29,54 +28,41 @@
             const icid = params.get('icid');
             const action = params.get('action');
 
-            if (!returnUrlBase) {
-                status.innerText = "Error: Missing Return URL from Google.";
-                return;
-            }
-
             btn.disabled = true;
-            btn.innerText = "SENSING...";
+            btn.innerText = "WAITING FOR TOUCH...";
 
             try {
-                // Generate a random challenge
                 const challenge = new Uint8Array(32);
                 window.crypto.getRandomValues(challenge);
 
-                // Hardware-specific options for Windows Hello / Secureye
                 const options = {
                     publicKey: {
                         challenge: challenge,
-                        rp: { name: "Tally_Stitch_Logistics" },
+                        rp: { name: "SL_Warehouse_Gateway" },
                         user: { 
-                            id: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 
-                            name: "sl_warehouse_user", 
-                            displayName: "Warehouse Associate" 
+                            id: Uint8Array.from(icid, c => c.charCodeAt(0)), // Unique ID per IC
+                            name: "user_" + icid, 
+                            displayName: "Worker_" + icid 
                         },
                         pubKeyCredParams: [{ alg: -7, type: "public-key" }],
                         authenticatorSelection: { 
-                            authenticatorAttachment: "platform", // Forces use of built-in Windows Hello sensor
-                            userVerification: "required",        // Forces biometric prompt
-                            residentKey: "preferred"
+                            // Removing 'platform' allows multiple users on one Windows account
+                            userVerification: "discouraged", 
+                            residentKey: "required"
                         },
                         timeout: 60000
                     }
                 };
 
-                // Trigger the Biometric hardware
                 const credential = await navigator.credentials.create(options);
-                
-                // Convert the result to a string for the URL
                 const pubKey = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.response.attestationObject)));
                 
-                // Return to the Google Sheet App
-                const finalUrl = `${returnUrlBase}?result=${encodeURIComponent(pubKey)}&icid=${icid}&action=${action}`;
-                window.location.href = finalUrl;
+                window.location.href = `${returnUrlBase}?result=${encodeURIComponent(pubKey)}&icid=${icid}&action=${action}`;
 
             } catch (e) {
                 btn.disabled = false;
                 btn.innerText = "RETRY SCAN";
-                status.innerText = "Hardware Error: " + e.message;
-                console.error(e);
+                status.innerText = "Error: " + e.message;
             }
         }
     </script>
