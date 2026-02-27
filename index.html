@@ -15,64 +15,68 @@
         <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
         <div id="status" class="mt-3 small text-danger fw-bold"></div>
     </div>
-    <script>
-        async function executeScan() {
-            const btn = document.getElementById('btn');
-            const status = document.getElementById('status');
-            const params = new URLSearchParams(window.location.search);
-            const bioId = params.get('bioId');
-            const action = params.get('action');
-            const icid = params.get('icid');
+<script>
+async function executeScan() {
+    const btn = document.getElementById('btn');
+    const params = new URLSearchParams(window.location.search);
+    const icid = params.get('icid');
+    const bioId = params.get('bioId');
+    const action = params.get('action');
 
-            btn.disabled = true;
-            btn.innerText = "AUTHENTICATING...";
+    btn.disabled = true;
+    btn.innerText = "AUTHENTICATING...";
 
-            try {
-                const challenge = window.crypto.getRandomValues(new Uint8Array(32));
-                
-                if (action === 'ENROLL') {
-                    const options = {
-                        publicKey: {
-                            challenge: challenge,
-                            rp: { name: "SL_Logistics" },
-                            user: { 
-                                id: new TextEncoder().encode(icid), 
-                                name: "Worker_" + icid, 
-                                displayName: "ICID: " + icid 
-                            },
-                            pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-                            authenticatorSelection: { 
-                                // Removing platform attachment forces unique credential isolation
-                                userVerification: "required",
-                                residentKey: "required", 
-                                requireResidentKey: true
-                            }
-                        }
-                    };
-                    const credential = await navigator.credentials.create({ publicKey: options.publicKey });
-                    const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
-                    window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${icid}&action=${action}&station=${params.get('station')}`;
-                } else {
-                    const options = {
-                        publicKey: {
-                            challenge: challenge,
-                            allowCredentials: [{
-                                id: Uint8Array.from(atob(decodeURIComponent(bioId).trim()), c => c.charCodeAt(0)),
-                                type: 'public-key'
-                            }],
-                            userVerification: "required"
-                        }
-                    };
-                    const assertion = await navigator.credentials.get({ publicKey: options.publicKey });
-                    const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(assertion.rawId)));
-                    window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${icid}&action=${action}&station=${params.get('station')}`;
+    try {
+        const challenge = window.crypto.getRandomValues(new Uint8Array(32));
+        
+        // ENROLLMENT: Create a unique hardware slot for this ICID
+        if (action === 'ENROLL') {
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    rp: { name: "SL_Logistics" },
+                    user: { 
+                        // CRITICAL: We pass the ICID as the ID Buffer.
+                        // This forces Windows to distinguish this user from others.
+                        id: new TextEncoder().encode(icid), 
+                        name: "Worker_" + icid, 
+                        displayName: "ICID: " + icid 
+                    },
+                    pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+                    authenticatorSelection: { 
+                        authenticatorAttachment: "platform",
+                        userVerification: "required",
+                        residentKey: "required", 
+                        requireResidentKey: true
+                    }
                 }
-            } catch (e) {
-                btn.disabled = false;
-                btn.innerText = "RETRY SCAN";
-                status.innerText = "Access Denied: Finger mismatch for this specific User ID.";
-            }
+            };
+            const credential = await navigator.credentials.create({ publicKey: options.publicKey });
+            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
+            window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${icid}&action=${action}&station=${params.get('station')}`;
+        } 
+        // VERIFICATION: Demand the exact key created for this ICID
+        else {
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    allowCredentials: [{
+                        id: Uint8Array.from(atob(decodeURIComponent(bioId)), c => c.charCodeAt(0)),
+                        type: 'public-key'
+                    }],
+                    userVerification: "required"
+                }
+            };
+            const assertion = await navigator.credentials.get({ publicKey: options.publicKey });
+            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(assertion.rawId)));
+            window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${icid}&action=${action}&station=${params.get('station')}`;
         }
-    </script>
+    } catch (e) {
+        btn.disabled = false;
+        btn.innerText = "RETRY SCAN";
+        alert("Access Denied: Fingerprint not matched to this specific User Profile.");
+    }
+}
+</script>
 </body>
 </html>
