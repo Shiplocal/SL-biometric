@@ -11,7 +11,7 @@
 <body>
     <div class="bridge-card">
         <h4 class="fw-bold text-primary">Biometric Identity</h4>
-        <p class="text-muted small">Place your finger on the sensor. <br>The system is requesting a unique Hardware ID.</p>
+        <p class="text-muted small">Place finger on sensor.<br>Requesting Unique Hardware ID...</p>
         <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
         <div id="status" class="mt-3 small text-danger fw-bold"></div>
     </div>
@@ -23,23 +23,23 @@
             const params = new URLSearchParams(window.location.search);
             
             btn.disabled = true;
-            btn.innerText = "LINKING HARDWARE...";
+            btn.innerText = "AUTHENTICATING...";
 
             try {
                 const options = {
                     publicKey: {
-                        challenge: new Uint8Array(32),
+                        challenge: window.crypto.getRandomValues(new Uint8Array(32)),
                         rp: { name: "SL_Logistics" },
                         user: { 
                             id: new TextEncoder().encode(params.get('icid')), 
                             name: "IC_" + params.get('icid'), 
-                            displayName: "ID: " + params.get('icid') 
+                            displayName: "Worker ID: " + params.get('icid') 
                         },
                         pubKeyCredParams: [{ alg: -7, type: "public-key" }],
                         authenticatorSelection: { 
                             authenticatorAttachment: "platform",
                             userVerification: "required",
-                            residentKey: "required", // FORCES ELAN CHIP TO GENERATE UNIQUE ID
+                            residentKey: "required", 
                             requireResidentKey: true
                         },
                         timeout: 60000
@@ -48,7 +48,7 @@
 
                 const credential = await navigator.credentials.create(options);
                 
-                // This Credential ID (rawId) is the unique "Fingerprint Thumbprint"
+                // This rawId is the unique identifier for THIS specific finger
                 const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
                 
                 window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${params.get('action')}`;
@@ -56,7 +56,7 @@
             } catch (e) {
                 btn.disabled = false;
                 btn.innerText = "RETRY SCAN";
-                status.innerText = "Hardware Error: " + e.message;
+                status.innerText = "Error: " + e.message;
             }
         }
     </script>
