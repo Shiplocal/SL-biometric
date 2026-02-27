@@ -29,26 +29,31 @@ async function executeScan() {
         const challenge = window.crypto.getRandomValues(new Uint8Array(32));
         
         // OPTION A: ENROLLMENT (Create a permanent Resident Key)
-        if (action === 'ENROLL') {
-            const options = {
-                publicKey: {
-                    challenge: challenge,
-                    rp: { name: "SL_Logistics" },
-                    user: { 
-                        id: new TextEncoder().encode(params.get('icid')), 
-                        name: "User_" + params.get('icid'), 
-                        displayName: "ID: " + params.get('icid') 
-                    },
-                    pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-                    authenticatorSelection: { 
-                        authenticatorAttachment: "platform",
-                        residentKey: "required", 
-                        requireResidentKey: true
-                    }
-                }
-            };
-            const credential = await navigator.credentials.create({ publicKey: options.publicKey });
-            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
+// Inside the executeScan() function on GitHub
+if (action === 'ENROLL') {
+    const options = {
+        publicKey: {
+            challenge: challenge,
+            rp: { name: "SL_Logistics", id: window.location.hostname },
+            user: { 
+                // CRITICAL: We convert the ICID to a unique 64-bit buffer
+                // This forces Windows to create a SEPARATE key for this specific ICID
+                id: Uint8Array.from(params.get('icid'), c => c.charCodeAt(0)), 
+                name: "User_" + params.get('icid'), 
+                displayName: "ICID: " + params.get('icid') 
+            },
+            pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+            authenticatorSelection: { 
+                authenticatorAttachment: "platform",
+                userVerification: "required", // Forces a specific finger check
+                residentKey: "required", 
+                requireResidentKey: true
+            }
+        }
+    };
+    const credential = await navigator.credentials.create({ publicKey: options.publicKey });
+    // ... rest of the redirect logic
+}            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
             window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${action}&station=${params.get('station')}`;
         } 
         
