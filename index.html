@@ -1,45 +1,183 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SL Secure Gateway v2.1.3</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background: #4e73df; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: 'Segoe UI', sans-serif; }
-        .bridge-card { background: white; color: #333; padding: 40px; border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.3); text-align: center; max-width: 400px; }
-    </style>
+  <title>SL Secure Gateway v3.1.0</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #4e73df; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; font-family: 'Segoe UI', sans-serif; }
+    .bridge-card { background: white; color: #333; padding: 40px; border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.3); text-align: center; max-width: 420px; width: 90%; }
+    .action-badge { font-size: 0.78rem; background: #e8f0fe; color: #1a3a6b; border-radius: 20px; padding: 5px 16px; display: inline-block; margin-bottom: 14px; font-weight: bold; }
+    .fp-icon { font-size: 4rem; margin: 8px 0; line-height: 1; }
+    #btnScan { font-size: 1.05rem; padding: 14px; }
+    .status-box { min-height: 48px; display: flex; align-items: center; justify-content: center; }
+    .help-box { text-align: left; font-size: 0.78rem; color: #666; background: #f8f9fa; border-radius: 8px; padding: 12px 16px; margin-top: 16px; }
+    .help-box li { margin-bottom: 3px; }
+  </style>
 </head>
 <body>
-    <div class="bridge-card">
-        <h4 class="fw-bold text-primary">Biometric Identity</h4>
-        <p class="text-muted small">Place your finger on the sensor to continue.</p>
-        <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
-        <div id="status" class="mt-3 small text-danger fw-bold"></div>
-    </div>
-    <script>
-        async function executeScan() {
-            const btn = document.getElementById('btn');
-            const status = document.getElementById('status');
-            const params = new URLSearchParams(window.location.search);
-            btn.disabled = true; btn.innerText = "Scanning...";
-            try {
-                const challenge = window.crypto.getRandomValues(new Uint8Array(32));
-                const options = {
-                    publicKey: {
-                        challenge: challenge,
-                        rp: { name: "SL_Logistics" },
-                        user: { id: new TextEncoder().encode(params.get('icid')), name: "User_" + params.get('icid'), displayName: "ID: " + params.get('icid') },
-                        pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-                        authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" }
-                    }
-                };
-                const res = await navigator.credentials.create({ publicKey: options.publicKey });
-                const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(res.rawId)));
-                window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${params.get('action')}&station=${params.get('station')}`;
-            } catch (e) {
-                btn.disabled = false; btn.innerText = "RETRY SCAN";
-                status.innerText = "Scan failed. Please try again.";
-            }
+<div class="bridge-card">
+  <div class="text-primary fw-bold mb-1" style="font-size:1.05rem;">SL Biometric Portal</div>
+  <div id="actionBadge" class="action-badge">Loading...</div>
+  <div class="fp-icon">👆</div>
+  <p class="text-muted small mb-3">
+    Place your <strong>registered finger</strong> on the MFS110 scanner.<br>
+    Any other finger will be rejected.
+  </p>
+
+  <button id="btnScan" class="btn btn-primary w-100 fw-bold shadow" onclick="executeScan()">
+    SCAN FINGERPRINT
+  </button>
+
+  <div class="status-box mt-3">
+    <div id="status" class="small fw-bold"></div>
+  </div>
+
+  <!-- Bridge not running -->
+  <div id="errBridge" style="display:none;" class="alert alert-danger mt-3 text-start small">
+    <strong>⚠️ Bridge Service Not Responding</strong><br>
+    The local fingerprint service is not running on this machine.<br>
+    <ol class="mb-0 mt-1">
+      <li>Open <strong>Task Manager → Services</strong></li>
+      <li>Find <strong>SL Biometric Bridge</strong> and click Start</li>
+      <li>If missing, ask IT to run <code>SL_Biometric_Setup.bat</code> on this machine</li>
+    </ol>
+  </div>
+
+  <!-- Scanner not detected -->
+  <div id="errScanner" style="display:none;" class="alert alert-warning mt-3 text-start small">
+    <strong>⚠️ MFS110 Scanner Not Detected</strong><br>
+    <ol class="mb-0 mt-1">
+      <li>Check the MFS110 USB cable is connected</li>
+      <li>Try unplugging and replugging the scanner</li>
+      <li>Ensure <strong>MantraL1RDService</strong> is running in Task Manager → Services</li>
+    </ol>
+  </div>
+
+  <div class="help-box">
+    <strong>What happens when you scan:</strong>
+    <ul class="mb-0 mt-1">
+      <li>MFS110 captures your fingerprint locally</li>
+      <li>Matched against your enrolled template on this machine</li>
+      <li>Only your registered finger will pass</li>
+      <li>No proxy attendance is possible</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  const params    = new URLSearchParams(window.location.search);
+  const action    = params.get('action')    || '';
+  const icid      = params.get('icid')      || '';
+  const station   = params.get('station')   || '';
+  const returnUrl = params.get('returnUrl') || '';
+  const BRIDGE    = 'http://127.0.0.1:7777';
+
+  const labels = { ENROLL: '🔐 Enrolling Fingerprint', START_SHIFT: '▶️ Starting Shift', END_SHIFT: '⏹ Ending Shift' };
+  document.getElementById('actionBadge').innerText = labels[action] || action;
+
+  const btn    = document.getElementById('btnScan');
+  const status = document.getElementById('status');
+
+  function setStatus(msg, color) {
+    status.className = 'small fw-bold text-' + (color || 'primary');
+    status.innerText = msg;
+  }
+
+  function hideErrors() {
+    document.getElementById('errBridge').style.display  = 'none';
+    document.getElementById('errScanner').style.display = 'none';
+  }
+
+  async function checkBridge() {
+    try {
+      const res = await fetch(BRIDGE + '/health', { signal: AbortSignal.timeout(3000) });
+      return res.ok;
+    } catch(e) { return false; }
+  }
+
+  async function executeScan() {
+    btn.disabled  = true;
+    btn.innerText = 'SCANNING...';
+    hideErrors();
+    setStatus('Connecting to fingerprint service...', 'primary');
+
+    try {
+      // Step 1: Verify bridge is running
+      const bridgeUp = await checkBridge();
+      if (!bridgeUp) {
+        document.getElementById('errBridge').style.display = 'block';
+        setStatus('', '');
+        btn.disabled  = false;
+        btn.innerText = 'RETRY';
+        return;
+      }
+
+      btn.innerText = '👆 PLACE FINGER NOW...';
+      setStatus('Place your finger firmly on the scanner...', 'primary');
+
+      if (action === 'ENROLL') {
+        // ── ENROLL: capture and store on this machine ──────────────────────
+        setStatus('Enrolling — hold finger steady for 2 seconds...', 'primary');
+        const res    = await fetch(BRIDGE + '/enroll', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ icid }),
+          signal:  AbortSignal.timeout(20000)
+        });
+        const result = await res.json();
+
+        if (!result.success) {
+          if ((result.error || '').toLowerCase().includes('scanner')) {
+            document.getElementById('errScanner').style.display = 'block';
+          }
+          throw new Error(result.error || 'Enrollment failed. Try again.');
         }
-    </script>
+
+        setStatus('✅ Fingerprint enrolled! Submitting for approval...', 'success');
+        btn.innerText = 'ENROLLED ✓';
+
+        // Redirect to Apps Script — LOCAL_ENROLLED token tells server it's legit
+        window.top.location.href = returnUrl
+          + '?fmrData='  + encodeURIComponent('LOCAL_ENROLLED')
+          + '&icid='     + encodeURIComponent(icid)
+          + '&action='   + encodeURIComponent('ENROLL')
+          + '&station='  + encodeURIComponent(station);
+
+      } else {
+        // ── VERIFY: 1:1 match against stored template ──────────────────────
+        setStatus('Verifying fingerprint — hold finger steady...', 'primary');
+        const res    = await fetch(BRIDGE + '/verify', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ icid, action }),
+          signal:  AbortSignal.timeout(20000)
+        });
+        const result = await res.json();
+
+        if (!result.success || !result.match) {
+          if ((result.error || '').toLowerCase().includes('scanner')) {
+            document.getElementById('errScanner').style.display = 'block';
+          }
+          throw new Error(result.error || 'Fingerprint did not match. Proxy attendance blocked.');
+        }
+
+        setStatus('✅ Fingerprint matched! Recording attendance...', 'success');
+        btn.innerText = 'VERIFIED ✓';
+
+        // Redirect to Apps Script — BRIDGE_VERIFIED token confirms bridge matched
+        window.top.location.href = returnUrl
+          + '?fmrData='  + encodeURIComponent('BRIDGE_VERIFIED')
+          + '&icid='     + encodeURIComponent(icid)
+          + '&action='   + encodeURIComponent(action)
+          + '&station='  + encodeURIComponent(station);
+      }
+
+    } catch(e) {
+      setStatus('✕ ' + e.message, 'danger');
+      btn.disabled  = false;
+      btn.innerText = 'RETRY SCAN';
+    }
+  }
+</script>
 </body>
 </html>
