@@ -15,53 +15,67 @@
         <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" onclick="executeScan()">SCAN FINGER</button>
         <div id="status" class="mt-3 small text-danger fw-bold"></div>
     </div>
-    <script>
-        async function executeScan() {
-            const btn = document.getElementById('btn');
-            const status = document.getElementById('status');
-            const params = new URLSearchParams(window.location.search);
-            const bioId = params.get('bioId');
-            
-            btn.disabled = true;
-            btn.innerText = "VERIFYING...";
+<script>
+async function executeScan() {
+    const btn = document.getElementById('btn');
+    const params = new URLSearchParams(window.location.search);
+    const bioId = params.get('bioId');
+    const action = params.get('action');
+    
+    btn.disabled = true;
+    btn.innerText = "AUTHENTICATING...";
 
-            try {
-                const options = {
-                    publicKey: {
-                        challenge: window.crypto.getRandomValues(new Uint8Array(32)),
-                        rp: { name: "SL_Logistics" },
-                        user: { 
-                            id: new TextEncoder().encode(params.get('icid')), 
-                            name: "Worker_" + params.get('icid'), 
-                            displayName: "ID: " + params.get('icid') 
-                        },
-                        pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-                        authenticatorSelection: { 
-                            authenticatorAttachment: "platform",
-                            userVerification: "required",
-                            residentKey: "required", 
-                            requireResidentKey: true
-                        },
-                        // The Anchor: If we have a saved ID, we ONLY allow that finger scan
-                        allowCredentials: (bioId && bioId !== "" && bioId !== "null") ? [{
-                            id: Uint8Array.from(atob(decodeURIComponent(bioId).trim()), c => c.charCodeAt(0)),
-                            type: 'public-key'
-                        }] : [],
-                        timeout: 60000
+    try {
+        const challenge = window.crypto.getRandomValues(new Uint8Array(32));
+        
+        // OPTION A: ENROLLMENT (Create a permanent Resident Key)
+        if (action === 'ENROLL') {
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    rp: { name: "SL_Logistics" },
+                    user: { 
+                        id: new TextEncoder().encode(params.get('icid')), 
+                        name: "User_" + params.get('icid'), 
+                        displayName: "ID: " + params.get('icid') 
+                    },
+                    pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+                    authenticatorSelection: { 
+                        authenticatorAttachment: "platform",
+                        residentKey: "required", 
+                        requireResidentKey: true
                     }
-                };
-
-                const credential = await navigator.credentials.create({ publicKey: options.publicKey });
-                const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
-                window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${params.get('action')}&station=${params.get('station')}`;
-
-            } catch (e) {
-                btn.disabled = false;
-                btn.innerText = "RETRY SCAN";
-                status.innerText = "Identity Error: Access denied or finger mismatch.";
-                console.error(e);
-            }
+                }
+            };
+            const credential = await navigator.credentials.create({ publicKey: options.publicKey });
+            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(credential.rawId)));
+            window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${action}&station=${params.get('station')}`;
+        } 
+        
+        // OPTION B: START/END SHIFT (Retrieve the EXACT saved Key)
+        else {
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    allowCredentials: [{
+                        id: Uint8Array.from(atob(decodeURIComponent(bioId)), c => c.charCodeAt(0)),
+                        type: 'public-key'
+                    }],
+                    userVerification: "required"
+                }
+            };
+            const assertion = await navigator.credentials.get({ publicKey: options.publicKey });
+            // For 'get', the rawId is the same Credential ID we saved!
+            const credId = btoa(String.fromCharCode.apply(null, new Uint8Array(assertion.rawId)));
+            window.location.href = `${params.get('returnUrl')}?credId=${encodeURIComponent(credId)}&icid=${params.get('icid')}&action=${action}&station=${params.get('station')}`;
         }
-    </script>
+
+    } catch (e) {
+        btn.disabled = false;
+        btn.innerText = "RETRY SCAN";
+        alert("Identity Mismatch: This finger is not registered for this User ID.");
+    }
+}
+</script>
 </body>
 </html>
