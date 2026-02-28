@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SL FacialID Bridge v3.6.1</title>
+    <title>SL FacialID Bridge v3.6.2</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
+    <script defer src="https://unpkg.com/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
     <style>
         body { background: #4e73df; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: 'Segoe UI', sans-serif; }
         .bridge-card { background: white; color: #333; padding: 30px; border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.3); text-align: center; width: 420px; }
@@ -25,43 +25,39 @@
 
     <div id="statusBox" class="status-badge bg-light text-secondary mb-3">
         <div id="spinner" class="loading-spinner"></div>
-        <span id="statusText">Downloading AI Engine...</span>
+        <span id="statusText">Initializing AI Engine...</span>
     </div>
 
-    <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" disabled>INITIALIZING...</button>
+    <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" disabled>PLEASE WAIT...</button>
 </div>
 
 <script>
     const params = new URLSearchParams(window.location.search);
-    const action = params.get('action');
-    const icid = params.get('icid');
-    const savedBio = params.get('bioId'); 
-    const returnUrl = params.get('returnUrl');
-    const station = params.get('station');
-
-    const video = document.getElementById('video');
-    const statusText = document.getElementById('statusText');
-    const statusBox = document.getElementById('statusBox');
-    const btn = document.getElementById('btn');
-    const spinner = document.getElementById('spinner');
+    const action = params.get('action'), icid = params.get('icid'), savedBio = params.get('bioId'), returnUrl = params.get('returnUrl'), station = params.get('station');
+    const video = document.getElementById('video'), statusText = document.getElementById('statusText'), statusBox = document.getElementById('statusBox'), btn = document.getElementById('btn'), spinner = document.getElementById('spinner');
 
     async function init() {
-        // 1. Wait for Library to exist in global scope
+        // Gatekeeper: Wait for library
         if (typeof faceapi === 'undefined') {
-            console.log("AI Library not detected yet, retrying...");
+            console.log("Waiting for face-api library...");
             setTimeout(init, 500);
             return;
         }
 
         try {
-            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+            // Using UNPKG as a more reliable backup to JSDelivr
+            const MODEL_URL = 'https://unpkg.com/@vladmandic/face-api@1.7.15/model/';
             
-            // 2. Load the 3 required models
+            statusText.innerText = "Loading AI Detector...";
             await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+            
+            statusText.innerText = "Loading Landmarks...";
             await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+            
+            statusText.innerText = "Loading Recognition...";
             await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
-
-            // 3. Start the camera
+            
+            statusText.innerText = "Starting Camera...";
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { width: 640, height: 480, facingMode: "user" } 
             });
@@ -70,35 +66,28 @@
             video.onloadedmetadata = () => {
                 spinner.style.display = 'none';
                 statusBox.className = "status-badge bg-primary text-white";
-                statusText.innerText = "Engine Ready - Look at Camera";
-                btn.innerText = (action === 'ENROLL') ? "REGISTER MY FACE" : "VERIFY IDENTITY";
+                statusText.innerText = "Ready to Scan";
+                btn.innerText = (action === 'ENROLL') ? "REGISTER FACE" : "VERIFY IDENTITY";
                 btn.disabled = false;
             };
 
         } catch (e) {
-            console.error("Setup Error:", e);
+            console.error("Critical Error:", e);
             spinner.style.display = 'none';
             statusBox.className = "status-badge bg-danger text-white";
-            statusText.innerText = "Camera or Network Error";
+            statusText.innerText = "Hardware/Network Error";
+            btn.innerText = "RELOAD PAGE";
+            btn.disabled = false;
+            btn.onclick = () => location.reload();
         }
     }
 
-    // Run the wait-and-init loop
     init();
 
     btn.onclick = async () => {
+        if(btn.innerText === "RELOAD PAGE") return;
         btn.disabled = true;
-        statusText.innerText = "Analyzing Face... Don't Move";
+        statusText.innerText = "Analyzing Face... Hold Steady";
         
-        // Stabilize frame
-        await new Promise(r => setTimeout(r, 600));
-
-        const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
-        
-        if (!detection) {
-            statusText.innerText = "Face not found. Center your face.";
-            btn.disabled = false;
-            return;
-        }
-
-        const descriptor = Array.from(detection.
+        await new Promise(r => setTimeout(r, 500));
+        const detection = await faceapi.
