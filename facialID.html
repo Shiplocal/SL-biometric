@@ -3,71 +3,93 @@
 <head>
     <title>SL FacialID Bridge</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
     <style>
         body { background: #4e73df; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: 'Segoe UI', sans-serif; }
         .bridge-card { background: white; color: #333; padding: 30px; border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.3); text-align: center; width: 420px; }
-        #v-wrap { position: relative; width: 100%; height: 280px; background: #000; border-radius: 10px; overflow: hidden; margin-bottom: 15px; }
+        #v-wrap { position: relative; width: 100%; height: 280px; background: #000; border-radius: 10px; overflow: hidden; margin-bottom: 15px; border: 3px solid #eee; }
         video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
         .status-badge { font-size: 0.85rem; padding: 8px 15px; border-radius: 20px; font-weight: bold; }
+        .loading-spinner { width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; display: inline-block; animation: spin 1s linear infinite; margin-right: 10px; vertical-align: middle; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
 <div class="bridge-card">
     <h5 class="fw-bold text-primary mb-3">FACIAL VERIFICATION</h5>
     <div id="v-wrap"><video id="video" autoplay muted playsinline></video></div>
-    <div id="status" class="status-badge bg-light text-secondary mb-3">Initializing AI Models...</div>
-    <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" disabled>PLEASE WAIT</button>
+    <div id="statusBox" class="status-badge bg-light text-secondary mb-3">
+        <div class="loading-spinner"></div><span id="statusText">Starting AI Engine...</span>
+    </div>
+    <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" disabled>INITIALIZING...</button>
 </div>
+
 <script>
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action'), icid = params.get('icid'), savedBio = params.get('bioId'), returnUrl = params.get('returnUrl');
-    const video = document.getElementById('video'), status = document.getElementById('status'), btn = document.getElementById('btn');
+    const video = document.getElementById('video'), statusText = document.getElementById('statusText'), statusBox = document.getElementById('statusBox'), btn = document.getElementById('btn');
 
     async function init() {
         try {
-        status.innerText = "Loading AI Models...";
-        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
-        
-        // Load each net and log it
-        await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
-        console.log("AI: Detector Loaded");
-        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
-        console.log("AI: Landmarks Loaded");
-        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
-        console.log("AI: Recognition Loaded");
+            // Robust Model Loading
+            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+            console.log("Loading models from:", MODEL_URL);
+            
+            await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+            console.log("Models loaded successfully.");
 
-        status.innerText = "Starting Camera...";
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
-        video.srcObject = stream;
-        
-        // Wait for video to actually play
-        video.onloadedmetadata = () => {
-            status.innerText = "AI Ready - Ready to Scan";
-            status.className = "status-badge bg-primary text-white";
-            btn.disabled = false;
-        };
-    } catch (e) {
-        console.error("Initialization Failed:", e);
-        status.innerText = "Error: " + e.message;
-        status.className = "status-badge bg-danger text-white";
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                statusBox.className = "status-badge bg-primary text-white";
+                statusText.innerText = "Camera Ready - Scan Now";
+                document.querySelector('.loading-spinner').style.display = 'none';
+                btn.innerText = (action === 'ENROLL') ? "REGISTER MY FACE" : "VERIFY IDENTITY";
+                btn.disabled = false;
+            };
+        } catch (e) {
+            console.error("Critical Error:", e);
+            statusBox.className = "status-badge bg-danger text-white";
+            statusText.innerText = "Error: Check Camera Permissions";
+            btn.innerText = "HARDWARE ERROR";
+        }
     }
-}
 
     btn.onclick = async () => {
-        btn.disabled = true; status.innerText = "Analyzing Face...";
-        const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
-        if (!detection) { status.innerText = "Face not found. Adjust position."; btn.disabled = false; return; }
+        btn.disabled = true;
+        statusText.innerText = "Analyzing Biometrics...";
         
+        // Wait 500ms for video to stabilize
+        await new Promise(r => setTimeout(r, 500));
+
+        const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+        
+        if (!detection) {
+            statusText.innerText = "Face not found. Move closer.";
+            btn.disabled = false;
+            return;
+        }
+
         const descriptor = Array.from(detection.descriptor).join(',');
+        
         if (action === 'ENROLL') {
             window.location.href = `${returnUrl}?bioData=${encodeURIComponent(descriptor)}&icid=${icid}&action=ENROLL&station=${params.get('station')}`;
         } else {
-            if (!savedBio || savedBio === "undefined") { alert("No face data on file."); return; }
+            if (!savedBio || savedBio === "undefined") {
+                statusText.innerText = "User not enrolled!";
+                return;
+            }
             const distance = faceapi.euclideanDistance(detection.descriptor, new Float32Array(savedBio.split(',').map(Number)));
+            
             if (distance < 0.6) {
                 window.location.href = `${returnUrl}?bioData=MATCHED&icid=${icid}&action=${action}&station=${params.get('station')}`;
-            } else { status.innerText = "Face Mismatch!"; btn.disabled = false; }
+            } else {
+                statusText.innerText = "Face Mismatch! Access Denied.";
+                btn.disabled = false;
+            }
         }
     };
     init();
