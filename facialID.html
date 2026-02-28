@@ -26,14 +26,33 @@
 
     async function init() {
         try {
-            const URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-            await Promise.all([faceapi.nets.ssdMobilenetv1.loadFromUri(URL), faceapi.nets.faceLandmark68Net.loadFromUri(URL), faceapi.nets.faceRecognitionNet.loadFromUri(URL)]);
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
-            video.srcObject = stream;
-            status.innerText = "Ready to Scan"; status.className = "status-badge bg-primary text-white";
-            btn.innerText = action === 'ENROLL' ? "REGISTER FACE" : "VERIFY IDENTITY"; btn.disabled = false;
-        } catch (e) { status.innerText = "Camera Error"; status.className = "status-badge bg-danger text-white"; }
+        status.innerText = "Loading AI Models...";
+        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+        
+        // Load each net and log it
+        await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+        console.log("AI: Detector Loaded");
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        console.log("AI: Landmarks Loaded");
+        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        console.log("AI: Recognition Loaded");
+
+        status.innerText = "Starting Camera...";
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
+        video.srcObject = stream;
+        
+        // Wait for video to actually play
+        video.onloadedmetadata = () => {
+            status.innerText = "AI Ready - Ready to Scan";
+            status.className = "status-badge bg-primary text-white";
+            btn.disabled = false;
+        };
+    } catch (e) {
+        console.error("Initialization Failed:", e);
+        status.innerText = "Error: " + e.message;
+        status.className = "status-badge bg-danger text-white";
     }
+}
 
     btn.onclick = async () => {
         btn.disabled = true; status.innerText = "Analyzing Face...";
