@@ -15,54 +15,32 @@
     </style>
 </head>
 <body>
-
 <div class="bridge-card">
     <h5 class="fw-bold text-primary mb-3">FACIAL VERIFICATION</h5>
-    
-    <div id="v-wrap">
-        <video id="video" autoplay muted playsinline></video>
-    </div>
-
+    <div id="v-wrap"><video id="video" autoplay muted playsinline></video></div>
     <div id="statusBox" class="status-badge bg-light text-secondary mb-3">
-        <div id="spinner" class="loading-spinner"></div>
-        <span id="statusText">Initializing AI Engine...</span>
+        <div id="spinner" class="loading-spinner"></div><span id="statusText">Initializing AI Engine...</span>
     </div>
-
     <button id="btn" class="btn btn-primary w-100 fw-bold py-3 shadow" disabled>PLEASE WAIT...</button>
 </div>
-
 <script>
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action'), icid = params.get('icid'), savedBio = params.get('bioId'), returnUrl = params.get('returnUrl'), station = params.get('station');
     const video = document.getElementById('video'), statusText = document.getElementById('statusText'), statusBox = document.getElementById('statusBox'), btn = document.getElementById('btn'), spinner = document.getElementById('spinner');
 
     async function init() {
-        // Gatekeeper: Wait for library
-        if (typeof faceapi === 'undefined') {
-            console.log("Waiting for face-api library...");
-            setTimeout(init, 500);
-            return;
-        }
-
+        if (typeof faceapi === 'undefined') { setTimeout(init, 500); return; }
         try {
-            // Using UNPKG as a more reliable backup to JSDelivr
             const MODEL_URL = 'https://unpkg.com/@vladmandic/face-api@1.7.15/model/';
-            
             statusText.innerText = "Loading AI Detector...";
             await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
-            
             statusText.innerText = "Loading Landmarks...";
             await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
-            
             statusText.innerText = "Loading Recognition...";
             await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
-            
             statusText.innerText = "Starting Camera...";
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: 640, height: 480, facingMode: "user" } 
-            });
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
             video.srcObject = stream;
-            
             video.onloadedmetadata = () => {
                 spinner.style.display = 'none';
                 statusBox.className = "status-badge bg-primary text-white";
@@ -70,24 +48,31 @@
                 btn.innerText = (action === 'ENROLL') ? "REGISTER FACE" : "VERIFY IDENTITY";
                 btn.disabled = false;
             };
-
         } catch (e) {
-            console.error("Critical Error:", e);
             spinner.style.display = 'none';
             statusBox.className = "status-badge bg-danger text-white";
-            statusText.innerText = "Hardware/Network Error";
-            btn.innerText = "RELOAD PAGE";
-            btn.disabled = false;
-            btn.onclick = () => location.reload();
+            statusText.innerText = "Hardware Error";
         }
     }
-
     init();
 
     btn.onclick = async () => {
-        if(btn.innerText === "RELOAD PAGE") return;
         btn.disabled = true;
-        statusText.innerText = "Analyzing Face... Hold Steady";
-        
+        statusText.innerText = "Analyzing... Hold Steady";
         await new Promise(r => setTimeout(r, 500));
-        const detection = await faceapi.
+        const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+        if (!detection) { statusText.innerText = "Face not found."; btn.disabled = false; return; }
+        const descriptor = Array.from(detection.descriptor).join(',');
+        if (action === 'ENROLL') {
+            window.location.href = `${returnUrl}?bioData=${encodeURIComponent(descriptor)}&icid=${icid}&action=ENROLL&station=${station}`;
+        } else {
+            if (!savedBio || savedBio === "undefined") { statusText.innerText = "No Face Data!"; return; }
+            const distance = faceapi.euclideanDistance(detection.descriptor, new Float32Array(savedBio.split(',').map(Number)));
+            if (distance < 0.6) {
+                window.location.href = `${returnUrl}?bioData=MATCHED&icid=${icid}&action=${action}&station=${station}`;
+            } else { statusText.innerText = "Mismatch!"; btn.disabled = false; }
+        }
+    };
+</script>
+</body>
+</html>
