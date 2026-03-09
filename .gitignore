@@ -4,3 +4,6 @@ stderr.log
 stdout.log
 .env
 npm-debug.log*
+uploads/
+tmp/
+public/full_codebase.txt
