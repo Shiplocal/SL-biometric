@@ -1,0 +1,3 @@
+﻿"tid","impact_date","loss_bucket","loss_sub_bucket","shipment_type","station","value","Debit Note Confirm by","Cash Recovery Type","CM/Manager Confirm","Remarks"
+"TRK1234567890","15-01-2026","Lost Parcel","Short Delivery","Delivery","ANDD","245.50","Rahul Sharma","IC Payment","YES","Parcel missing from bag"
+"Tracking ID (required)","DD-MM-YYYY","e.g. Lost / Damaged","Sub-category","Delivery / ReturnPickup / MFN","Station code e.g. ANDD","Amount in ₹","Name of person confirming","IC Payment / SHIP BANK / CASH","YES / NO","Any additional remarks"

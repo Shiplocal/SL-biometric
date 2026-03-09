@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShipLocal · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f2f5f9;--card:#fff;--border:#dde3ed;--navy:#0d1b2a;
+  --amber:#f59e0b;--amber-d:#d97706;--amber-bg:rgba(245,158,11,.09);
+  --green:#10b981;--green-bg:rgba(16,185,129,.09);--green-d:#059669;
+  --red:#ef4444;--red-bg:rgba(239,68,68,.09);--red-d:#dc2626;
+  --blue:#3b82f6;--blue-bg:rgba(59,130,246,.09);
+  --text:#0f172a;--text-2:#475569;--text-3:#94a3b8;
+  --shadow:0 1px 3px rgba(13,27,42,.06),0 4px 16px rgba(13,27,42,.09);
+  --shadow-lg:0 8px 40px rgba(13,27,42,.16);--r:12px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.lc{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:2rem;width:100%;max-width:390px;box-shadow:var(--shadow);animation:up .3s ease}
+@keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.card-hd{display:flex;align-items:center;gap:12px;margin-bottom:1.75rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border)}
+.hd-icon{width:44px;height:44px;background:var(--amber-bg);border:1px solid rgba(245,158,11,.25);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.hd-title{font-size:1.05rem;font-weight:700;color:var(--navy)}
+.hd-sub{font-size:.78rem;color:var(--text-2);margin-top:2px}
+input,select,textarea{width:100%;padding:10px 14px;background:#fff;border:1.5px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:.9rem;outline:none;transition:border-color .2s,box-shadow .2s;appearance:none}
+select{cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+input:focus,select:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.72rem;font-weight:600;color:var(--text-3);margin-bottom:5px;letter-spacing:.06em;text-transform:uppercase}
+.btn{padding:9px 16px;border:none;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:.85rem;font-weight:600;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn-primary{background:var(--amber);color:#fff;width:100%;justify-content:center;padding:11px}
+.btn-primary:hover{background:var(--amber-d)}
+.btn-ghost{background:transparent;color:var(--text-2);border:1.5px solid var(--border)}
+.btn-ghost:hover{background:var(--bg)}
+.btn-green{background:var(--green);color:#fff}
+.btn-green:hover{background:var(--green-d)}
+.tbl-inp{border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:.8rem;background:var(--bg);color:var(--text-1);width:100%;box-sizing:border-box}
+.tbl-inp:focus{outline:none;border-color:var(--navy)}
+.btn-red{background:var(--red-bg);color:var(--red-d);border:1px solid rgba(239,68,68,.2)}
+.btn-red:hover{background:rgba(239,68,68,.15)}
+.btn-amber{background:var(--amber-bg);color:var(--amber-d);border:1px solid rgba(245,158,11,.2)}
+.btn-amber:hover{background:rgba(245,158,11,.18)}
+.btn-sm{padding:5px 11px;font-size:.75rem;border-radius:6px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+/* dash */
+.dash{max-width:1150px;margin:0 auto;padding:24px 20px}
+.dash-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-icon{width:40px;height:40px;background:var(--amber-bg);border:1px solid rgba(245,158,11,.2);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.brand-title{font-size:1rem;font-weight:700;color:var(--navy)}
+.brand-sub{font-size:.73rem;color:var(--text-2)}
+.period-chip{font-family:'DM Mono',monospace;font-size:.7rem;font-weight:600;padding:3px 10px;border-radius:10px;background:#0d1b2a;color:#e2e8f0}
+/* tabs */
+.tabs{display:flex;gap:3px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:4px;margin-bottom:22px;box-shadow:var(--shadow);overflow-x:auto;flex-wrap:wrap;gap:3px}
+.tab{padding:8px 14px;border-radius:7px;font-size:.81rem;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--text-2);transition:all .18s;font-family:'DM Sans',sans-serif;white-space:nowrap;display:flex;align-items:center;gap:5px}
+.tab:hover{color:var(--text);background:var(--bg)}
+.tab.active{background:var(--navy);color:#fff}
+.tab .cnt{font-family:'DM Mono',monospace;font-size:.66rem;padding:1px 6px;border-radius:8px}
+.tab.active .cnt{background:rgba(255,255,255,.15)}
+.tab:not(.active) .cnt{background:var(--bg);color:var(--text-3)}
+.tab-panel{display:none}
+.tab-panel.active{display:block;animation:up .2s ease}
+.wf-tab{padding:6px 12px;border-radius:6px;font-size:.78rem;font-weight:600;cursor:pointer;border:1.5px solid transparent;background:var(--bg);color:var(--text-2);transition:all .15s;white-space:nowrap}
+.wf-tab:hover{color:var(--text);border-color:var(--border)}
+.wf-tab.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+/* panel card */
+.pc{background:var(--card);border:1px solid var(--border);border-radius:var(--r);margin-bottom:20px;box-shadow:var(--shadow)}
+.pc-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+.pc-title{font-size:.9rem;font-weight:700;color:var(--navy)}
+.pc-sub{font-size:.73rem;color:var(--text-2);margin-top:2px}
+.sbar{padding:11px 18px;border-bottom:1px solid var(--border)}
+.sw{position:relative}
+.sw svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-3);pointer-events:none}
+.sw input{padding-left:36px;background:var(--bg);margin:0}
+/* table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{padding:10px 14px;text-align:left;font-size:.7rem;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;background:#f8fafc;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:11px 14px;font-size:.84rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(13,27,42,.012)}
+.mono{font-family:'DM Mono',monospace;font-size:.78rem;color:var(--text-2)}
+.code-pill{font-family:'DM Mono',monospace;font-size:.81rem;font-weight:600;color:var(--amber-d);background:var(--amber-bg);border:1px solid rgba(245,158,11,.2);padding:3px 9px;border-radius:6px;display:inline-block}
+.pill{font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:10px;display:inline-block;letter-spacing:.03em}
+.p-submitted{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+.p-open{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+.p-active{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+.p-inactive{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+.p-enrolled{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(59,130,246,.2)}
+.p-violation{background:var(--red-bg);color:var(--red-d);border:1px solid rgba(239,68,68,.2)}
+.p-resolved{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+.p-sys{background:var(--amber-bg);color:var(--amber-d);border:1px solid rgba(245,158,11,.2)}
+.v-cnt{display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:700;color:var(--red-d);background:var(--red-bg);border:1px solid rgba(239,68,68,.2);padding:2px 7px;border-radius:9px}
+.acts{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.empty-row td{text-align:center;color:var(--text-3);padding:30px;font-size:.83rem}
+/* overview view buttons */
+.ov-view-btn{padding:6px 12px;border-radius:6px;font-size:.78rem;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--text-2);transition:all .15s;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.ov-view-btn:hover{background:var(--card);color:var(--text)}
+.ov-view-btn.active{background:var(--navy);color:#fff}
+/* overview station cards */
+.ov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.ov-card{background:var(--card);border:1.5px solid var(--border);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow);cursor:pointer;transition:all .18s;position:relative}
+.ov-card:hover{border-color:var(--amber);transform:translateY(-2px);box-shadow:0 6px 24px rgba(13,27,42,.12)}
+.ov-st{font-size:.88rem;font-weight:700;color:var(--navy);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.ov-mods{display:flex;gap:5px;flex-wrap:wrap}
+.ov-mod{font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:8px}
+.ov-mod.sub{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+.ov-mod.open{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+/* att overview card */
+.ov-att-bar{display:flex;gap:10px;margin-bottom:8px;align-items:center}
+.ov-att-num{font-size:1.4rem;font-weight:700;line-height:1}
+.ov-att-lbl{font-size:.68rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em}
+.ov-prog{height:5px;border-radius:4px;background:var(--bg);overflow:hidden;margin-top:6px}
+.ov-prog-fill{height:5px;border-radius:4px;transition:width .4s ease}
+/* drill-down IC table */
+.ic-att-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid var(--border);transition:background .1s}
+.ic-att-row:last-child{border-bottom:none}
+.ic-att-row:hover{background:var(--bg)}
+.ic-av{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0}
+.ic-av.present{background:var(--green-bg);color:var(--green-d);border:1.5px solid rgba(16,185,129,.2)}
+.ic-av.absent{background:var(--bg);color:var(--text-3);border:1.5px solid var(--border)}
+.ic-av.active{background:rgba(59,130,246,.1);color:var(--blue);border:1.5px solid rgba(59,130,246,.2)}
+.ic-name-col{flex:1;font-size:.85rem;font-weight:600;color:var(--navy)}
+.ic-meta{font-size:.72rem;color:var(--text-3);margin-top:1px}
+.ic-status{font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:8px;white-space:nowrap}
+.ic-present{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+.ic-active{background:rgba(59,130,246,.1);color:var(--blue);border:1px solid rgba(59,130,246,.2)}
+.ic-absent{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+.ic-warn{background:var(--amber-bg);color:var(--amber-d);border:1px solid rgba(245,158,11,.2)}
+/* stat row */
+.stat-row{display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.stat-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;flex:1;min-width:110px;box-shadow:var(--shadow)}
+.stat-val{font-size:1.6rem;font-weight:700;color:var(--navy);line-height:1}
+.stat-lbl{font-size:.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+.stat-sub{font-size:.75rem;color:var(--text-2);margin-top:2px}
+/* upload zone */
+.upzone{border:2px dashed var(--border);border-radius:10px;padding:26px;text-align:center;cursor:pointer;transition:border-color .2s;background:var(--bg)}
+.upzone:hover,.upzone.drag{border-color:var(--amber);background:var(--amber-bg)}
+.upzone input{display:none}
+/* data mgmt fields */
+.dm-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:16px}
+.dm-row .dm-f{flex:1;min-width:120px}
+.dm-lbl{font-size:.72rem;font-weight:600;color:var(--text-3);display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em}
+/* modal */
+.overlay{position:fixed;inset:0;background:rgba(13,27,42,.5);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:999;animation:fi .2s ease;padding:20px}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.75rem;max-width:460px;width:100%;box-shadow:var(--shadow-lg);animation:up .25s ease}
+.m-icon{width:50px;height:50px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;margin:0 auto 14px}
+.m-ok{background:var(--green-bg);border:1px solid rgba(16,185,129,.2)}
+.m-warn{background:var(--red-bg);border:1px solid rgba(239,68,68,.2)}
+.m-title{font-size:1.05rem;font-weight:700;text-align:center;color:var(--navy);margin-bottom:5px}
+.m-sub{font-size:.85rem;color:var(--text-2);text-align:center;line-height:1.55;margin-bottom:18px}
+.m-info-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#f8fafc;border-radius:8px;margin-bottom:7px}
+.m-info-lbl{font-size:.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em}
+.m-info-val{font-family:'DM Mono',monospace;font-size:.83rem;font-weight:500}
+.token-box{background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text-2);word-break:break-all;margin:10px 0}
+.m-input{width:100%;padding:10px 14px;background:#f8fafc;border:1.5px solid var(--border);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:.9rem;outline:none;margin-bottom:14px;transition:border-color .2s}
+.m-input:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+.m-btns{display:flex;gap:10px}
+.m-btns .btn{flex:1;justify-content:center}
+/* toast */
+#toasts{position:fixed;top:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:7px;pointer-events:none}
+.toast{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:9px;padding:11px 16px;font-size:.84rem;font-weight:500;box-shadow:var(--shadow-lg);pointer-events:auto;animation:tIn .3s ease;max-width:300px}
+.toast.success{border-left-color:var(--green)}
+.toast.error{border-left-color:var(--red)}
+.toast.info{border-left-color:var(--blue)}
+@keyframes tIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
+@keyframes tOut{from{opacity:1}to{opacity:0;transform:translateX(18px)}}
+/* enrolment cards */
+.enroll-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.enroll-card{background:var(--card);border:1.5px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:var(--shadow);transition:border-color .2s}
+.enroll-card.pending{border-color:rgba(245,158,11,.4)}
+.enroll-photo{width:100%;aspect-ratio:1;object-fit:cover;background:#f1f5f9;display:block}
+.enroll-photo-placeholder{width:100%;aspect-ratio:1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:var(--text-3)}
+.enroll-info{padding:12px}
+.enroll-name{font-size:.88rem;font-weight:700;color:var(--navy);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.enroll-id{font-family:'DM Mono',monospace;font-size:.7rem;color:var(--text-3);margin-bottom:2px}
+.enroll-st{font-size:.74rem;color:var(--text-2);margin-bottom:10px}
+.enroll-time{font-size:.7rem;color:var(--text-3);margin-bottom:10px}
+.enroll-acts{display:flex;gap:6px}
+.enroll-acts .btn{flex:1;justify-content:center;padding:6px 8px;font-size:.76rem}
+.approved-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.ap-card{border:1px solid var(--border);border-radius:9px;overflow:hidden;box-shadow:var(--shadow);background:var(--card)}
+.ap-photo{width:100%;aspect-ratio:1;object-fit:cover;background:#f1f5f9}
+.ap-photo-placeholder{width:100%;aspect-ratio:1;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:2rem;color:var(--text-3)}
+.ap-info{padding:9px 10px}
+.ap-name{font-size:.78rem;font-weight:700;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ap-meta{font-size:.68rem;color:var(--text-3);font-family:'DM Mono',monospace;margin-top:2px}
+.ap-by{font-size:.68rem;color:var(--green-d);margin-top:3px}
+/* photo modal */
+.photo-modal{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.5rem;max-width:480px;width:100%;box-shadow:var(--shadow-lg);animation:up .25s ease}
+.photo-modal img{width:100%;border-radius:8px;display:block;margin-bottom:12px}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+
+<!-- LOGIN -->
+<div class="login-wrap" id="login-wrap">
+  <div class="lc">
+    <div class="card-hd"><div class="hd-icon">⚙️</div><div><div class="hd-title">ShipLocal Admin</div><div class="hd-sub">Restricted - authorised admins only</div></div></div>
+    <div class="field"><label>Master Password</label>
+      <input type="password" id="inp-pass" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn btn-primary" id="btn-login" onclick="doLogin()">Access Dashboard →</button>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboard" class="hidden">
+<div class="dash">
+  <div class="dash-hd">
+    <div class="brand"><div class="brand-icon">⚙️</div><div><div class="brand-title">ShipLocal Admin</div><div class="brand-sub">Warehouse management portal</div></div></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="global-station" style="padding:6px 28px 6px 10px;font-size:.82rem;border-radius:8px;border:1.5px solid var(--border);background:var(--card);color:var(--text-1);cursor:pointer" onchange="onGlobalStationChange()">
+        <option value="">🏢 All Stations</option>
+      </select>
+      <span class="period-chip" id="active-period">-</span>
+      <button class="btn btn-ghost btn-sm" onclick="refreshAll()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="sw('t-ov')"       id="tab-t-ov">📊 Overview</button>
+    <button class="tab"        onclick="sw('t-users');loadEnroll()"    id="tab-t-users">👤 Users <span class="cnt" id="cnt-users">0</span><span class="cnt" id="cnt-enroll" style="background:rgba(245,158,11,.15);color:var(--amber-d);display:none">0</span></button>
+    <button class="tab"        onclick="sw('t-machines')" id="tab-t-machines">🖥 Machines <span class="cnt" id="cnt-machines">0</span></button>
+    <button class="tab"        onclick="sw('t-viol')"     id="tab-t-viol">⚠️ Violations <span class="cnt" id="cnt-viol" style="background:rgba(239,68,68,.15);color:var(--red-d)">0</span></button>
+    <button class="tab"        onclick="sw('t-kms')"      id="tab-t-kms">🚚 KMS</button>
+    <button class="tab"        onclick="sw('t-adv')"      id="tab-t-adv">💰 Advances</button>
+    <button class="tab"        onclick="sw('t-deb')"      id="tab-t-deb">💸 Debit Responses</button>
+    <button class="tab"        onclick="sw('t-data')"     id="tab-t-data">⚙️ Settings</button>
+    <button class="tab"        onclick="sw('t-legacy');loadLegacyTab()" id="tab-t-legacy" style="color:var(--green-d)">🗄️ Legacy Data</button>
+    <button class="tab"        onclick="sw('t-test');loadTestFlags()" id="tab-t-test" style="color:var(--amber-d)">🧪 Test Mode</button>
+  </div>
+
+  <!-- FACE ENROLMENTS -->
+
+  <!-- OVERVIEW -->
+  <div id="t-ov" class="tab-panel active">
+
+    <!-- View selector bar -->
+    <div class="pc" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;flex-wrap:wrap">
+        <div style="font-size:.78rem;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap">Overview</div>
+        <div style="display:flex;gap:3px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px">
+          <button class="ov-view-btn active" id="ovb-att"    onclick="setOvView('att')">👁️ Attendance Today</button>
+          <button class="ov-view-btn"        id="ovb-period" onclick="setOvView('period')">📅 Period Attendance</button>
+          <button class="ov-view-btn"        id="ovb-adv"    onclick="setOvView('adv')">💰 Advances</button>
+          <button class="ov-view-btn"        id="ovb-deb"    onclick="setOvView('deb')">💸 Debit</button>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="date" id="ov-date" style="width:auto;padding:6px 10px;font-size:.8rem;display:none" onchange="renderOvView()">
+          <select id="ov-period" style="width:auto;padding:6px 24px 6px 10px;font-size:.8rem" onchange="renderOvView()"></select>
+          <button class="btn btn-ghost btn-sm" onclick="renderOvView()">↻ Refresh</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Station drill-down breadcrumb -->
+    <div id="ov-breadcrumb" class="hidden" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:.84rem">
+      <button class="btn btn-ghost btn-sm" onclick="clearOvDrill()">← All Stations</button>
+      <span style="color:var(--text-3)">›</span>
+      <span id="ov-drill-label" style="font-weight:700;color:var(--navy)">-</span>
+    </div>
+
+    <!-- Overview content -->
+    <div id="ov-content"></div>
+
+  </div>
+
+  <!-- USERS -->
+  <div id="t-users" class="tab-panel">
+    <!-- Pending enrolments - shown inline at top of Users tab -->
+    <div class="pc" id="enroll-pending-pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">🪪 Pending Face Enrolments</div><div class="pc-sub">Review captured photo against CCTV - approve or reject</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadEnroll()">↻ Refresh</button>
+      </div>
+      <div id="enroll-pending-wrap" style="padding:16px">
+        <div style="text-align:center;color:var(--text-3);padding:28px;font-size:.84rem">Loading…</div>
+      </div>
+    </div>
+    <div class="pc" id="enroll-approved-pc">
+      <div class="pc-hd"><div><div class="pc-title">All Enrolled Users</div><div class="pc-sub">Approved face enrolments with reference photos</div></div></div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-enrolled" placeholder="Search…" oninput="filterEnrolled(this.value)"></div></div>
+      <div id="enroll-approved-wrap" style="padding:16px">
+        <div style="text-align:center;color:var(--text-3);padding:28px;font-size:.84rem">Loading…</div>
+      </div>
+    </div>
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">All Users</div><div class="pc-sub">Manage IC staff - offboard departed employees</div></div>
+        <div style="display:flex;gap:8px">
+          <select id="users-station-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="filterUsersStation()"><option value="">All Stations</option></select>
+          <select id="users-status-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="filterUsersStation()">
+            <option value="active">Active</option>
+            <option value="offboarded">Offboarded</option>
+            <option value="">All</option>
+          </select>
+        </div>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-au" placeholder="Search name, ID, station…" oninput="filterTbl('all-users','s-au')"></div></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Name</th><th>IC ID</th><th>Station</th><th>Face</th><th>Violations</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="all-users"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- MACHINES -->
+  <div id="t-machines" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">Pending Device Requests</div><div class="pc-sub">Awaiting CCTV approval</div></div></div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-pm" placeholder="Search…" oninput="filterTbl('pend-m','s-pm')"></div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Station</th><th>Request ID</th><th>CCTV Code</th><th>Actions</th></tr></thead><tbody id="pend-m"></tbody></table></div>
+    </div>
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">All Machines</div><div class="pc-sub">Active devices - revoke to force re-registration</div></div></div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-am" placeholder="Search…" oninput="filterTbl('all-m','s-am')"></div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Machine ID</th><th>Station</th><th>Status</th><th>Approved By</th><th>Actions</th></tr></thead><tbody id="all-m"></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- VIOLATIONS -->
+  <div id="t-viol" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">Policy Violations</div><div class="pc-sub">Missing clock-outs - midnight auto-logouts</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="month" id="viol-month" style="width:auto;padding:7px 12px;font-size:.82rem" onchange="loadViol()">
+          <select id="viol-station" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadViol()"><option value="">All Stations</option></select>
+          <select id="viol-resolved" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadViol()">
+            <option value="">All</option><option value="false">Open</option><option value="true">Resolved</option>
+          </select>
+        </div>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-viol" placeholder="Search…" oninput="filterTbl('viol-body','s-viol')"></div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Name</th><th>IC ID</th><th>Station</th><th>Clock In</th><th>Status</th><th>Resolved By</th><th>Action</th></tr></thead><tbody id="viol-body"></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- KMS REPORT -->
+  <div id="t-kms" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">KMS Submissions</div><div class="pc-sub">IC & AMX assignment log</div></div>
+        <select id="kms-period" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadKms()"></select>
+      </div>
+      <div id="kms-summary-stats" style="padding:4px 0 10px"></div>
+      <div id="kms-summary-grid" class="ov-grid"></div>
+    </div>
+
+    <!-- EDSP Data Management - part of KMS tab -->
+    <div class="pc" style="margin-top:16px">
+      <div class="pc-hd">
+        <div><div class="pc-title">📦 EDSP Data Cycles</div><div class="pc-sub">Upload bi-weekly EDSP data. Publish when ready for stations to view.</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadEdspCycles()">↻ Refresh</button>
+      </div>
+      <div style="padding:16px;border-bottom:1px solid var(--border)">
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr auto;gap:10px;align-items:end">
+          <div class="dm-f"><span class="dm-lbl">Date From</span><input type="date" id="edsp-from"></div>
+          <div class="dm-f"><span class="dm-lbl">Date To</span><input type="date" id="edsp-to"></div>
+          <div class="dm-f"><span class="dm-lbl">Cycle Label (auto-generated)</span><input type="text" id="edsp-cycle-label" placeholder="e.g. Jan 16-31 2026" style="background:var(--bg);color:var(--text-2)"></div>
+          <div></div>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <div class="upzone" style="flex:1;padding:12px" onclick="document.getElementById('edsp-upload-file').click()">
+            <input type="file" id="edsp-upload-file" accept=".csv,.tsv,.txt" style="display:none" onchange="onEdspFileSelected(this)">
+            <div style="font-size:1.1rem;margin-bottom:3px">📤</div>
+            <div style="font-weight:600;font-size:.85rem" id="edsp-file-lbl">Click to select EDSP file (TSV/CSV)</div>
+          </div>
+          <button class="btn btn-primary" onclick="uploadEdspCycle()" id="btn-edsp-upload" disabled>Upload Cycle →</button>
+        </div>
+        <div id="edsp-upload-status" style="margin-top:8px;font-size:.82rem;color:var(--text-2)"></div>
+      </div>
+      <div id="edsp-cycles-list" style="padding:16px">
+        <div class="empty-row" style="text-align:center;padding:20px;color:var(--text-3)">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+  <script>
+  function edspRenderCycles(d) {
+    var el = document.getElementById('edsp-cycles-list');
+    if(!el) return;
+    var h = '<table style="width:100%;border-collapse:collapse">';
+    h += '<tr style="background:#f0f0f0"><th style="padding:8px;text-align:left">ID</th><th style="padding:8px;text-align:left">Label</th><th style="padding:8px;text-align:left">From</th><th style="padding:8px;text-align:left">To</th><th style="padding:8px;text-align:left">Active</th><th style="padding:8px"></th></tr>';
+    for(var i=0;i<d.length;i++){
+      var c=d[i];
+      var btn=c.is_active
+        ?'<button class="btn btn-ghost btn-sm" onclick="toggleEdspPublish('+c.id+',false)">Deactivate</button>'
+        :'<button class="btn btn-green btn-sm" onclick="toggleEdspPublish('+c.id+',true)">Set Active</button>';
+      h+='<tr style="border-top:1px solid #ddd">'
+        +'<td style="padding:8px">'+c.id+'</td>'
+        +'<td style="padding:8px;font-weight:600">'+c.cycle_label+'</td>'
+        +'<td style="padding:8px">'+(c.date_from?c.date_from.substring(0,10):'-')+'</td>'
+        +'<td style="padding:8px">'+(c.date_to?c.date_to.substring(0,10):'-')+'</td>'
+        +'<td style="padding:8px">'+(c.is_active?'<span class="pill p-enrolled">Active</span>':'<span class="pill p-open">Inactive</span>')+'</td>'
+        +'<td style="padding:8px">'+btn+'</td>'
+        +'</tr>';
+    }
+    h+='</table>';
+    el.innerHTML=h;
+    if(window._cachedCycles===null||!window._cachedCycles) window._cachedCycles=d;
+  }
+
+  function edspTestLoad() {
+    var el = document.getElementById('edsp-cycles-list');
+    if(el) el.innerHTML = '<div style="text-align:center;padding:20px;color:#888">Loading...</div>';
+    var x = new XMLHttpRequest();
+    x.open('GET', '/api/admin/edsp-cycles', true);
+    x.timeout = 8000;
+    x.onload = function() {
+      if(x.status!==200){if(el)el.textContent='HTTP '+x.status;return;}
+      var d;
+      try{d=JSON.parse(x.responseText);}catch(e){if(el)el.textContent='Parse error: '+e.message;return;}
+      if(!Array.isArray(d)||!d.length){if(el)el.textContent='No cycles in DB';return;}
+      edspRenderCycles(d);
+    };
+    x.onerror=function(){if(el)el.textContent='Network error';};
+    x.ontimeout=function(){if(el)el.textContent='Timed out after 8s';};
+    x.send();
+  }
+  </script>
+
+  <!-- ADVANCES REPORT -->
+  <div id="t-adv" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">Request Advance</div><div class="pc-sub">Weekly per-IC requests - approve or reject</div></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="adv-status-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadAdv()">
+            <option value="">All Statuses</option>
+            <option value="PENDING" selected>Pending</option>
+            <option value="APPROVED">Approved</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+          <select id="adv-station-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadAdv()">
+            <option value="">All Stations</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadAdv()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-adv" placeholder="Search…" oninput="filterTbl('adv-body','s-adv')"></div></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr>
+          <th>Station</th><th>IC Name</th><th>Week</th>
+          <th>Amount</th><th>Reason</th><th>Requested</th>
+          <th>Status</th><th style="width:160px">Action</th>
+        </tr></thead>
+        <tbody id="adv-body"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- DEBIT REPORT -->
+  <div id="t-deb" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">Debit Responses</div><div class="pc-sub">Station decisions on losses</div></div>
+        <select id="deb-period" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadDeb()"></select>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-deb" placeholder="Search…" oninput="filterTbl('deb-body','s-deb')"></div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Station</th><th>TID</th><th>Type</th><th>Decision</th><th>Rec Type</th><th>TT#</th><th>Orphan</th><th>Remarks</th><th>Submitted</th></tr></thead><tbody id="deb-body"></tbody></table></div>
+    </div>
+
+    <!-- Debit Admin -->
+    <div class="pc" style="margin-top:16px">
+      <div class="pc-hd">
+        <div><div class="pc-title">🧾 Debit Management</div><div class="pc-sub">Add entries, review, then publish to stations. Anchored by publish month.</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="loadDebAdmin()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <!-- Toolbar -->
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="deb-admin-station-filter" style="padding:6px 24px 6px 10px;font-size:.82rem" onchange="loadDebAdmin()" onclick="populateDebStations()">
+          <option value="">All Stations</option>
+        </select>
+        <select id="deb-admin-status-filter" style="padding:6px 24px 6px 10px;font-size:.82rem" onchange="loadDebAdmin()">
+          <option value="">All Status</option>
+          <option value="draft">Draft</option>
+          <option value="published">Published</option>
+          <option value="answered">Answered</option>
+          <option value="sent_back">Sent Back</option>
+        </select>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <a href="/api/admin/debit-template" class="btn btn-ghost btn-sm">⬇ Template (.csv)</a>
+          <div class="upzone" style="padding:6px 12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;min-height:unset;border-radius:8px" onclick="document.getElementById('deb-adm-file').click()">
+            <input type="file" id="deb-adm-file" accept=".xlsx,.csv,.tsv,.txt" style="display:none" onchange="onDebAdmFileSelected(this)">
+            <span style="font-size:.82rem;font-weight:600" id="deb-adm-file-lbl">📤 Upload Excel</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="uploadDebEntries()" id="btn-deb-adm-upload" disabled>Import →</button>
+        </div>
+      </div>
+      <div id="deb-adm-status" style="padding:4px 16px;font-size:.78rem;color:var(--text-2);min-height:20px"></div>
+
+      <!-- Inline spreadsheet entry table -->
+      <div class="tbl-wrap" style="max-height:55vh;overflow:auto">
+        <table id="deb-admin-table" style="font-size:.78rem">
+          <thead>
+            <tr>
+              <th style="width:30px"><input type="checkbox" id="deb-chk-all" onchange="debToggleAll(this)"></th>
+              <th>Station</th><th>TID</th><th>Impact Date</th><th>Loss Bucket</th>
+              <th>Sub Bucket</th><th>Shipment Type</th><th>IC / User</th>
+              <th>Amount ₹</th><th>Confirm By</th><th>Recovery Type</th>
+              <th>CM Confirm</th><th>Remarks</th><th>Status</th><th style="width:80px"></th>
+            </tr>
+          </thead>
+          <tbody id="deb-admin-body"></tbody>
+          <!-- New entry row -->
+          <tfoot>
+            <tr id="deb-new-row" style="background:var(--green-bg)">
+              <td></td>
+              <td><select id="dnew-station" style="width:80px;font-size:.76rem;padding:3px 4px" onchange="loadNewRowICs()" onclick="populateDebStations()"><option value="">Station…</option></select></td>
+              <td><input id="dnew-tid" class="tbl-inp mono" placeholder="TID" style="width:130px;font-size:.72rem"></td>
+              <td><input id="dnew-date" class="tbl-inp" type="date"></td>
+              <td><input id="dnew-bucket" class="tbl-inp" placeholder="Loss bucket" style="width:100px"></td>
+              <td><input id="dnew-subbucket" class="tbl-inp" placeholder="Sub bucket" style="width:95px"></td>
+              <td><select id="dnew-shiptype" class="tbl-inp" style="width:105px">
+                <option value="">-</option><option>Delivery</option><option>ReturnPickup</option><option>MFN</option>
+              </select></td>
+              <td><select id="dnew-ic" class="tbl-inp" style="width:120px;font-size:.72rem"><option value="">Select IC…</option></select></td>
+              <td><input id="dnew-value" class="tbl-inp" type="number" step="0.01" placeholder="0.00" style="width:70px"></td>
+              <td><input id="dnew-confirmby" class="tbl-inp" placeholder="Confirm by" style="width:100px"></td>
+              <td><select id="dnew-recovery" class="tbl-inp" style="width:105px">
+                <option value="">-</option><option>IC Payment</option><option>SHIP BANK</option><option>CASH</option>
+              </select></td>
+              <td><select id="dnew-cmconfirm" class="tbl-inp" style="width:65px">
+                <option value="">-</option><option>YES</option><option>NO</option>
+              </select></td>
+              <td><input id="dnew-remarks" class="tbl-inp" placeholder="Remarks" style="width:120px"></td>
+              <td></td>
+              <td><button class="btn btn-green btn-sm" onclick="saveNewDebRow()">+ Add</button></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Bulk actions bar -->
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <span id="deb-selected-count" style="font-size:.8rem;color:var(--text-3)">0 selected</span>
+        <button class="btn btn-green btn-sm" onclick="publishSelected()">🚀 Publish Selected</button>
+        <button class="btn btn-primary btn-sm" onclick="publishAllDraft()">🚀 Publish All Draft</button>
+        <button class="btn btn-ghost btn-sm" onclick="sendBackSelected()" style="margin-left:8px">↩ Send Back Selected</button>
+        <button class="btn btn-red btn-sm" onclick="deleteSelected()">✕ Delete Selected</button>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- DATA MANAGEMENT (Settings) -->
+  <div id="t-data" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">Active Period</div><div class="pc-sub">Set the current billing period for all stations</div></div></div>
+      <div class="dm-row">
+        <div class="dm-f"><span class="dm-lbl">Period Start</span><input type="date" id="pd-start"></div>
+        <div class="dm-f"><span class="dm-lbl">Period End</span><input type="date" id="pd-end"></div>
+        <div class="dm-f"><span class="dm-lbl">Label (e.g. 2026-03-A)</span><input type="text" id="pd-label" placeholder="2026-03-A"></div>
+        <button class="btn btn-green" onclick="setPeriod()">Set Active Period</button>
+      </div>
+    </div>
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">Unlock Submitted Module</div><div class="pc-sub">Re-open a locked submission for a station</div></div></div>
+      <div class="dm-row">
+        <div class="dm-f"><span class="dm-lbl">Station</span><select id="ul-station"><option value="">Select…</option></select></div>
+        <div class="dm-f"><span class="dm-lbl">Module</span>
+          <select id="ul-module"><option value="KMS">KMS</option><option value="ADV">Advances</option><option value="DEB">Debit</option></select>
+        </div>
+        <div class="dm-f"><span class="dm-lbl">Period Label</span><input type="text" id="ul-period" placeholder="2026-03-A"></div>
+        <div class="dm-f"><span class="dm-lbl">Your Name</span><input type="text" id="ul-admin" placeholder="Admin name"></div>
+        <button class="btn btn-amber" onclick="unlockModule()">Unlock</button>
+      </div>
+    </div>
+    <div class="pc">
+      <div class="pc-hd"><div><div class="pc-title">Upload EDSP / AMX Data</div><div class="pc-sub">CSV columns: station_code, amx_id, delivery_date, parcel_type, delivered, pickup, swa, smd, mfn, returns</div></div></div>
+      <div style="padding:16px">
+        <div class="upzone" onclick="document.getElementById('edsp-file').click()">
+          <input type="file" id="edsp-file" accept=".csv" onchange="uploadCsv('edsp',this)">
+          <div style="font-size:1.4rem;margin-bottom:6px">📤</div>
+          <div style="font-weight:600;font-size:.9rem">Click or drag EDSP CSV</div>
+          <div style="font-size:.78rem;color:var(--text-3);margin-top:3px" id="edsp-status">Tagged to active period automatically</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- LEGACY DATA BROWSER -->
+  <div id="t-legacy" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div>
+          <div class="pc-title">🗄️ Legacy Database</div>
+          <div class="pc-sub">Read-only view of bifmein1_nship24 - live data from the legacy system</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="legacy-conn-status" style="font-size:.75rem;padding:4px 10px;border-radius:8px;background:var(--bg);color:var(--text-3)">Checking…</span>
+          <button class="btn btn-ghost btn-sm" onclick="loadLegacyTab()">↻ Refresh</button>
+        </div>
+      </div>
+      <!-- Sub-nav -->
+      <div style="display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <button class="wf-tab active" id="leg-t-stations" onclick="legacySubTab('stations')">🏢 Stations</button>
+        <button class="wf-tab" id="leg-t-ics"      onclick="legacySubTab('ics')">👷 ICs</button>
+        <button class="wf-tab" id="leg-t-users"    onclick="legacySubTab('users')">👤 Staff/Users</button>
+        <button class="wf-tab" id="leg-t-debit"    onclick="legacySubTab('debit')">💸 Debit Notes</button>
+        <button class="wf-tab" id="leg-t-advances" onclick="legacySubTab('advances')">💰 Advances</button>
+        <button class="wf-tab" id="leg-t-salary"   onclick="legacySubTab('salary')">🧾 Salary Slips</button>
+        <button class="wf-tab" id="leg-t-leaves"   onclick="legacySubTab('leaves')">🌴 Leaves</button>
+        <button class="wf-tab" id="leg-t-managers" onclick="legacySubTab('managers')">🧑‍💼 Cluster Managers</button>
+      </div>
+      <!-- Station filter -->
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <select id="leg-station-filter" style="width:auto;padding:6px 24px 6px 10px;font-size:.82rem" onchange="legacySubTabRefresh()">
+          <option value="">All Stations</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--text-2);cursor:pointer;user-select:none">
+          <input type="checkbox" id="leg-active-only" checked onchange="legacySubTabRefresh()" style="width:15px;height:15px;cursor:pointer">
+          Active only
+        </label>
+        <input type="text" id="leg-search" placeholder="Search…" oninput="legacyFilterTable()" style="padding:6px 10px;font-size:.82rem;border:1.5px solid var(--border);border-radius:8px;width:220px">
+        <span id="leg-count" style="font-size:.75rem;color:var(--text-3)"></span>
+      </div>
+      <div class="tbl-wrap" style="max-height:60vh;overflow-y:auto">
+        <table><thead id="leg-head"></thead><tbody id="leg-body"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TEST MODE -->
+  <div id="t-test" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">🧪 Test Mode Controls</div><div class="pc-sub">Flags are in-memory only - reset on server restart. Turn all OFF before going live.</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadTestFlags()">↻ Refresh</button>
+      </div>
+      <div style="padding:20px">
+        <div id="test-flags-wrap"><div style="text-align:center;color:var(--text-3);padding:24px">Loading…</div></div>
+        <div style="margin-top:20px;padding:16px;background:var(--amber-bg);border:1px solid rgba(245,158,11,.3);border-radius:10px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--amber-d);margin-bottom:8px">⚠ Production checklist - all must be OFF before going live</div>
+          <div id="prod-checklist" style="font-size:.8rem;color:var(--text-2);line-height:2.2"></div>
+        </div>
+        <div style="margin-top:14px;padding:16px;background:var(--bg);border:1px solid var(--border);border-radius:10px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--text-2);margin-bottom:4px">Manual Midnight Close</div>
+          <div style="font-size:.78rem;color:var(--text-3);margin-bottom:10px">Force-close all open shifts right now. Normally runs automatically at 23:59 every night, and also on each server restart for previous-day stale shifts.</div>
+          <button class="btn btn-amber btn-sm" onclick="triggerMidnightClose()">⏱ Run Midnight Close Now</button>
+          <span id="midnight-result" style="font-size:.78rem;color:var(--green-d);margin-left:12px"></span>
+        </div>
+        <div style="margin-top:14px;padding:16px;background:#fef2f2;border:1px solid rgba(239,68,68,.2);border-radius:10px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--red-d);margin-bottom:4px">🗑 Reset Submissions (Testing Only)</div>
+          <div style="font-size:.78rem;color:var(--text-3);margin-bottom:12px">Delete submitted KMS / ADV / DEB data to retest. This unlocks the module for the station.</div>
+          <button class="btn btn-ghost btn-sm" onclick="loadRecentSubmissions()">↻ Load Recent Submissions</button>
+          <div id="recent-submissions" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /dash -->
+</div><!-- /dashboard -->
+
+<!-- PHOTO LIGHTBOX -->
+<div class="overlay hidden" id="photo-modal">
+  <div class="photo-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div>
+        <div style="font-size:1rem;font-weight:700;color:var(--navy)" id="pm-name">-</div>
+        <div style="font-size:.75rem;color:var(--text-2)" id="pm-meta">-</div>
+      </div>
+      <button onclick="closeModal('photo-modal')" style="background:none;border:none;cursor:pointer;color:var(--text-3);font-size:1.6rem;line-height:1">×</button>
+    </div>
+    <img id="pm-img" src="" alt="Enrolment photo">
+    <div style="font-size:.75rem;color:var(--text-3);text-align:center" id="pm-time">-</div>
+  </div>
+</div>
+
+<!-- OFFBOARD MODAL -->
+<div class="overlay hidden" id="offboard-modal">
+  <div class="modal">
+    <div class="m-icon m-warn">👤</div>
+    <div class="m-title" id="ob-title">Offboard Employee</div>
+    <div class="m-sub" id="ob-sub">This will remove their face data and mark them inactive. Their attendance history is preserved.</div>
+    <div style="margin-bottom:12px">
+      <div class="dm-lbl" style="margin-bottom:5px">Reason for offboarding</div>
+      <select id="ob-reason" style="width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:.9rem;appearance:none;background:#fff url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\") no-repeat right 14px center;padding-right:36px">
+        <option value="Resigned">Resigned</option>
+        <option value="Contract ended">Contract ended</option>
+        <option value="Terminated">Terminated</option>
+        <option value="Transfer">Transfer to another station</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <input class="m-input" id="ob-admin" type="text" placeholder="Your name (admin)" onkeydown="if(event.key==='Enter')confirmOffboard()">
+    <div class="m-btns">
+      <button class="btn btn-ghost" onclick="closeModal('offboard-modal')">Cancel</button>
+      <button class="btn btn-red" onclick="confirmOffboard()">✕ Offboard</button>
+    </div>
+  </div>
+</div>
+
+<!-- APPROVE MODAL -->
+<div class="overlay hidden" id="approve-modal">
+  <div class="modal">
+    <div class="m-title" id="approve-title">Approve Device</div>
+    <div class="m-sub" id="approve-sub">Enter your name to authorise.</div>
+    <input class="m-input" id="approve-inp" type="text" placeholder="Your name" onkeydown="if(event.key==='Enter')confirmApprove()">
+    <div class="m-btns"><button class="btn btn-ghost" onclick="closeModal('approve-modal')">Cancel</button><button class="btn btn-green" onclick="confirmApprove()">✓ Approve Device</button></div>
+  </div>
+</div>
+
+<!-- SUCCESS MODAL -->
+<div class="overlay hidden" id="success-modal">
+  <div class="modal">
+    <div class="m-icon m-ok">✓</div>
+    <div class="m-title">Device Approved</div>
+    <div class="m-sub">WH machine will auto-unlock within 10 seconds.</div>
+    <div class="m-info-row"><span class="m-info-lbl">Machine ID</span><span class="m-info-val" id="sm-mid">-</span></div>
+    <div class="m-info-row"><span class="m-info-lbl">Station</span><span class="m-info-val" id="sm-st">-</span></div>
+    <div class="m-info-row"><span class="m-info-lbl">Approved by</span><span class="m-info-val" id="sm-adm">-</span></div>
+    <div style="font-size:.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-top:14px;margin-bottom:5px">Security Token</div>
+    <div class="token-box" id="sm-tok">-</div>
+    <button class="btn btn-primary" onclick="closeModal('success-modal');refreshAll()">Done</button>
+  </div>
+</div>
+
+<!-- RESOLVE MODAL -->
+<div class="overlay hidden" id="resolve-modal">
+  <div class="modal">
+    <div class="m-title">Resolve Violation</div>
+    <div class="m-sub" id="resolve-sub">Mark as reviewed and resolved.</div>
+    <input class="m-input" id="resolve-inp" type="text" placeholder="Your name / note" onkeydown="if(event.key==='Enter')confirmResolve()">
+    <div class="m-btns"><button class="btn btn-ghost" onclick="closeModal('resolve-modal')">Cancel</button><button class="btn btn-green" onclick="confirmResolve()">Mark Resolved</button></div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL -->
+<div class="overlay hidden" id="confirm-modal">
+  <div class="modal">
+    <div class="m-icon m-warn">⚠</div>
+    <div class="m-title" id="conf-title">Confirm</div>
+    <div class="m-sub" id="conf-sub">This cannot be undone.</div>
+    <div class="m-btns"><button class="btn btn-ghost" onclick="closeModal('confirm-modal')">Cancel</button><button class="btn btn-red" id="conf-ok">Confirm</button></div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="reject-modal">
+  <div class="modal">
+    <div class="m-icon m-warn">❌</div>
+    <div class="m-title">Reject Advance Request</div>
+    <div class="m-sub" id="reject-modal-name" style="font-weight:600;color:var(--navy);margin-bottom:4px">-</div>
+    <div class="m-sub" style="margin-bottom:14px">Optionally provide a reason - the manager will see this.</div>
+    <textarea id="reject-note" rows="3" placeholder="Rejection reason (optional)…" style="width:100%;font-size:.84rem;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit;color:var(--text);background:var(--card)"></textarea>
+    <div class="m-btns" style="margin-top:14px">
+      <button class="btn btn-ghost" onclick="closeModal('reject-modal')">Cancel</button>
+      <button class="btn btn-red" id="reject-confirm-btn">✕ Reject Request</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/admincore.js"></script>
+<script src="js/adminedsp.js"></script>
+<script src="js/admindebadmin.js"></script>
+<script src="js/adminoverview.js"></script>
+<script src="js/adminusers.js"></script>
+<script src="js/adminmachines.js"></script>
+<script src="js/adminviolations.js"></script>
+<script src="js/adminreports.js"></script>
+<script src="js/adminlegacy.js"></script>
+<script src="js/adminhelpers.js"></script>
+</body>
+</body>
+</html>

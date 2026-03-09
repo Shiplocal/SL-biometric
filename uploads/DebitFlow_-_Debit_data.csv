@@ -1,0 +1,40 @@
+tid	impact_date	loss_bucket	loss_sub_bucket	shipment_type	station	value	Cluster	Status	User Name	Debit Note Confirm by	Cash Recovery Type	Dispute	TT	Orphan ID/Double Lable Id	CM Confirm	Remarks	Debit-Type
+3.65434E+11	03-12-2025	Ageing	del_after_webreject	Delivery	VDDA	1190											Recovery/Case Open
+3.65478E+11	03-12-2025	Ageing	del_after_webreject	Delivery	VDDA	1190		Recovery	Amit Salunke	Amitbhai	IC Payment						Final Loss
+1.66671E+11	10-12-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	VDDA	1399		Recovery	Amit Salunke	Amitbhai	IC Payment						Final Loss
+5.14908E+11	08-02-2026	Ageing	Manully RTS	ReturnPickup	VDDA	5950		Recovery	Harendra Sahu	Harendrabhai	IC Payment						Final Loss
+3.66437E+11	20-01-2026	Ageing	Shipment Not Departed	Delivery	DULD	1359		Recovery	Harendra Sahu	Harendrabhai	IC Payment						Final Loss
+1.66933E+11	20-01-2026	Ageing	Shipment Not Departed	Delivery	DULE	985		Recovery	ayan	Pravinbhai	SHIP BANK						Final Loss
+1.66932E+11	19-01-2026	Ageing	Shipment Not Departed	Delivery	GIMD	1,801.85		Recovery	ayan	Pravinbhai	SHIP BANK						Final Loss
+3.63794E+11	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	GJAA	928		Recovery	ayan	Pravinbhai	SHIP BANK						Final Loss
+3.63794E+11	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	GJAB	928		Recovery	KALEEM KHAN	Ankitbhai	IC Payment						Final Loss
+3.63794E+11	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	GJAC	928		Recovery	MUSAB KHAN	Ankitbhai	IC Payment						Final Loss
+Short Cash	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	GJSA	928		Recovery	Sachin Bhalerao	Ankitbhai	IC Payment						Final Loss
+3.63794E+11	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	IXUA	928		Recovery	Sufiyan Shaikh	Ankitbhai	CASH						Final Loss
+Penalty	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	IXUC	928		Recovery	Arvind Pawar	Ankitbhai	CASH						Final Loss
+3.63794E+11	29-09-2025	Package Loss	Fluid received in SCMS but no induct	Delivery	IXUE	928		Recovery	Saquib Sayyed	Ankitbhai	CASH						Final Loss
+6.29498E+11	20-01-2026	WRTS but MDR	Case - D and E	ReturnPickup	IXUG	549											Recovery/Case Open
+6.29456E+11	13-01-2026	WRTS but MDR	Wrong Photo at RTS	ReturnPickup	JLDG	496											Recovery/Case Open
+3.66069E+11	27-12-2025	Package Loss	Fluid received in SCMS but	Delivery	JNGG	166											Recovery/Case Open
+3.66069E+11	27-12-2025	Package Loss	Fluid received in SCMS but	Delivery	JNGJ	166											Recovery/Case Open
+3.66069E+11	27-12-2025	Package Loss	Fluid received in SCMS but	Delivery	JORD	166											Recovery/Case Open
+6.29435E+11	12-01-2026	WRTS but MDR	Wrong Photo at RTS	ReturnPickup	LURE	549											Recovery/Case Open
+5.14919E+11	04-02-2026	Ageing	Exchange pickup Not Departed	ReturnPickup	MGND	2270											Recovery/Case Open
+1.67185E+11	13-02-2026	Ageing	Da side RTS Pending	Delivery	MGNE	1395											Recovery/Case Open
+3.66815E+11	13-02-2026	Ageing	Da Goes with shipment & station team all Process Manually	Delivery	MKUA	1099											Recovery/Case Open
+3.66815E+11	13-02-2026	Panalty	Da Goes with shipment & station team all Process Manually	Delivery	MKUF	250											Recovery/Case Open
+3.66857E+11	04-02-2026	Ageing	SWA shipment Manually Process	Delivery	NBME	5224											Recovery/Case Open
+3.66857E+11	04-02-2026	Panalty	SWA shipment Manually Process	Delivery	NDND	1000											Recovery/Case Open
+6.29581E+11	11-02-2026	Ageing	Departed Without RTS	ReturnPickup	PMYB	199											Recovery/Case Open
+6.29581E+11	11-02-2026	Ageing	Departed Without RTS	ReturnPickup	RJCB	199											Recovery/Case Open
+3.6708E+11	10-02-2026	Ageing	Da side RTS Pending	Delivery	RJCC	412											Recovery/Case Open
+6.29519E+11	27-01-2026	Ageing	Da side RTS Pending	ReturnPickup	RTMF	2111											Recovery/Case Open
+3.66468E+11	12-01-2026	Ageing	RTS Done but no Return	Delivery	SEHD	1915											Recovery/Case Open
+5.14935E+11	12-02-2026	Ageing	Da side RTS Pending	ReturnPickup	SGOE	760.95											Recovery/Case Open
+. Column 	11-02-2026	Ageing	Da side RTS Pending	ReturnPickup	VDDA	4499											Recovery/Case Open
+3.66732E+11	17-02-2026	SLP Mail	Investigation IT loss TID -366732202298	Delivery	VDDB	10998											Recovery/Case Open
+3.66732E+11	17-02-2026	SLP Mail	(Shipment without inform) Penalty	Delivery	VDDD	1500											Recovery/Case Open
+5.14935E+11	12-02-2026	Ageing	Da side RTS Pending	Delivery	ANDD	760.95											Recovery/Case Open
+3.66553E+11	16-01-2026	Ageing	Shipment Not Depart(Ageing)	Delivery	VDDA	1154											Recovery/Case Open
+3.66774E+11	16-01-2026	Ageing	Shipment Not Depart(Ageing)	Delivery	VDDD	3999											Recovery/Case Open
+3.67032E+11	11-02-2026	Ageing	Da side RTS Pending	Delivery	GIMD	569											Recovery/Case Open

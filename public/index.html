@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShipLocal · Warehouse Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script defer src="https://unpkg.com/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
+<style>
+:root{
+  --bg:#f2f5f9;--card:#fff;--border:#dde3ed;--navy:#0d1b2a;--navy-2:#162032;
+  --amber:#f59e0b;--amber-d:#d97706;--amber-bg:rgba(245,158,11,.09);
+  --green:#10b981;--green-bg:rgba(16,185,129,.09);--green-d:#059669;
+  --red:#ef4444;--red-bg:rgba(239,68,68,.09);--red-d:#dc2626;
+  --blue:#3b82f6;--blue-bg:rgba(59,130,246,.09);
+  --text:#0f172a;--text-2:#475569;--text-3:#94a3b8;
+  --shadow:0 1px 3px rgba(13,27,42,.06),0 4px 16px rgba(13,27,42,.09);
+  --shadow-md:0 8px 40px rgba(13,27,42,.16);--r:12px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:20px}
+/* -- LAYOUT -- */
+.center{display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 40px)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:2rem;box-shadow:var(--shadow);animation:up .3s ease}
+.login-card{width:100%;max-width:400px}
+@keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+/* dashboard */
+.dash{max-width:900px;margin:0 auto}
+.dash-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:10px}
+.brand-icon{width:38px;height:38px;background:var(--amber-bg);border:1px solid rgba(245,158,11,.25);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.brand-title{font-size:.95rem;font-weight:700;color:var(--navy)}
+.brand-sub{font-size:.72rem;color:var(--text-2)}
+/* -- FORM -- */
+.card-hd{display:flex;align-items:center;gap:12px;margin-bottom:1.75rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border)}
+.card-icon{width:44px;height:44px;background:var(--amber-bg);border:1px solid rgba(245,158,11,.25);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.card-title{font-size:1.05rem;font-weight:700;color:var(--navy)}
+.card-sub{font-size:.78rem;color:var(--text-2);margin-top:2px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.72rem;font-weight:600;color:var(--text-3);margin-bottom:5px;letter-spacing:.06em;text-transform:uppercase}
+select,input{width:100%;padding:11px 14px;background:#fff;border:1.5px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:.93rem;outline:none;transition:border-color .2s,box-shadow .2s;appearance:none}
+select{cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+input:focus,select:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:.87rem;font-weight:600;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn-primary{background:var(--amber);color:#fff;width:100%}
+.btn-primary:hover{background:var(--amber-d)}
+.btn-ghost{background:transparent;color:var(--text-2);border:1.5px solid var(--border)}
+.btn-ghost:hover{background:var(--bg);color:var(--text)}
+.btn-green{background:var(--green);color:#fff}
+.btn-green:hover{background:var(--green-d)}
+.btn-red-solid{background:var(--red);color:#fff}
+.btn-danger{background:var(--red-bg);color:var(--red-d);border:1px solid rgba(239,68,68,.2)}
+.btn-danger:hover{background:rgba(239,68,68,.18)}
+.btn-sm{padding:6px 12px;font-size:.78rem;border-radius:7px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+/* -- MODULE CARDS -- */
+.module-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:16px;margin-bottom:10px}
+.module-card{background:var(--card);border:1.5px solid var(--border);border-radius:var(--r);padding:22px 16px;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.module-card:hover{border-color:var(--amber);transform:translateY(-2px);box-shadow:var(--shadow)}
+.module-card.locked{opacity:1;cursor:pointer}
+.mc-emoji{font-size:2rem;margin-bottom:8px}
+.mc-title{font-size:.88rem;font-weight:700;color:var(--navy)}
+.mc-sub{font-size:.72rem;color:var(--text-2);margin-top:3px}
+.mc-badge{position:absolute;top:10px;right:10px;font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:12px}
+.badge-submitted{background:var(--red-bg);color:var(--red-d);border:1px solid rgba(239,68,68,.2)}
+.badge-open{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+/* -- MODULE VIEWS -- */
+.module-view{max-width:900px;margin:0 auto;display:none}
+.module-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.mod-title{font-size:1rem;font-weight:700;color:var(--navy)}
+/* workflow tabs */
+.wf-tabs{display:flex;gap:4px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:4px;margin-bottom:18px;box-shadow:var(--shadow)}
+.wf-tab{padding:8px 16px;border-radius:7px;font-size:.83rem;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--text-2);transition:all .18s;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px}
+.wf-tab.active{background:var(--navy);color:#fff}
+.wf-tab .tc{font-family:'DM Mono',monospace;font-size:.68rem;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,.15)}
+.wf-tab:not(.active) .tc{background:var(--bg);color:var(--text-3)}
+/* table */
+.tbl-wrap{overflow-x:auto;border:1.5px solid var(--border);border-radius:10px;margin-bottom:16px;background:var(--card);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse}.kms-tbl{width:auto;border-collapse:collapse}
+th{padding:10px 14px;text-align:left;font-size:.7rem;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;background:#f8fafc;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:11px 14px;font-size:.85rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr.group-sep td{border-top:2px solid var(--amber-bg)}
+td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0}
+.parent-cell{background:#f8fafc;font-weight:600;color:var(--navy);border-right:2px solid var(--border)}
+.empty-row td{text-align:center;color:var(--text-3);padding:32px;font-size:.85rem}
+/* -- KMS TABLE -- */
+.kms-tbl{width:100%;table-layout:fixed;border-collapse:collapse}
+.kms-tbl th{padding:7px 8px;font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);background:#f8fafc;border-bottom:2px solid var(--border);white-space:nowrap;text-align:left}
+.kms-tbl td{padding:6px 8px;font-size:.8rem;white-space:nowrap;vertical-align:middle;border-bottom:1px solid var(--border)}
+/* Column widths: fixed layout lets us control exactly */
+.kms-tbl col.col-cb   {width:32px}
+.kms-tbl col.col-amx  {width:200px}
+.kms-tbl col.col-date {width:72px}
+.kms-tbl col.col-ic   {width:160px}
+.kms-tbl col.col-kms  {width:58px}
+.kms-tbl col.col-type {width:72px}
+.kms-tbl col.col-num  {width:44px}
+/* AMX ID: truncate with ellipsis */
+.kms-tbl td.parent-cell:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* IC name input: fills the cell */
+.kms-tbl td input[list],.kms-tbl td input[type="text"]{width:100%;padding:4px 6px;font-size:.78rem;box-sizing:border-box}
+/* KMS number input: narrow centered */
+.kms-tbl td input[type="number"]{width:46px;padding:4px 5px;font-size:.8rem;text-align:center;box-sizing:border-box}
+/* Type + numeric stat columns: all centred */
+.kms-tbl th:nth-child(n+6),.kms-tbl td:nth-child(n+6){text-align:center}
+.kms-tbl th.col-h-type,.kms-tbl td.col-type{text-align:center}
+/* KMS row selection */
+.kms-tbl tr.kms-selected td{background:rgba(245,158,11,.12) !important}
+.kms-tbl tr.kms-row-click{cursor:pointer}
+.kms-tbl tr.kms-row-click:hover td{background:rgba(245,158,11,.05)}
+.kms-action-sticky{position:sticky;bottom:0;background:var(--card);border-top:1.5px solid var(--border);padding:10px 0 4px;z-index:10;margin-top:0}
+/* Summary table - auto layout, borrows kms visual style */
+
+/* action bar */
+.action-bar{display:flex;gap:10px;margin-top:6px}
+.action-bar .btn{flex:1}
+/* search */
+.search-row{display:flex;gap:10px;margin-bottom:14px;align-items:center}
+.sw{position:relative;flex:1}
+.sw svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-3);pointer-events:none}
+.sw input{padding-left:36px;background:var(--card)}
+/* registration */
+.code-block{background:var(--bg);border:1.5px dashed var(--amber);border-radius:10px;padding:20px;margin:16px 0;text-align:center}
+.code-val{font-family:'DM Mono',monospace;font-size:2.5rem;font-weight:500;color:var(--amber);letter-spacing:8px}
+.code-lbl{font-size:.7rem;color:var(--text-3);margin-top:5px;text-transform:uppercase;letter-spacing:.1em}
+.status-row{display:flex;align-items:center;gap:8px;font-size:.83rem;color:var(--text-2);margin-top:12px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--amber);animation:pulse 1.5s ease-in-out infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+/* attendance cards */
+.att-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:16px}
+.att-card{background:var(--card);border:1.5px solid var(--border);border-radius:10px;padding:14px;display:flex;align-items:center;gap:12px}
+.att-avatar{width:36px;height:36px;border-radius:50%;background:var(--amber-bg);border:1.5px solid rgba(245,158,11,.2);display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:700;color:var(--amber-d);flex-shrink:0}
+.att-name{font-size:.85rem;font-weight:600;color:var(--navy)}
+.att-id{font-size:.7rem;color:var(--text-3);font-family:'DM Mono',monospace;margin-top:1px}
+.att-days{margin-top:8px;display:flex;align-items:center;gap:8px}
+.att-days input{width:60px;text-align:center;padding:6px 8px;font-size:.9rem;font-weight:600}
+.att-bio{font-size:.72rem;color:var(--text-2);white-space:nowrap}
+/* staff list (biometric) */
+.staff-list{max-height:420px;overflow-y:auto;border:1.5px solid var(--border);border-radius:10px}
+.staff-list::-webkit-scrollbar{width:4px}
+.staff-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.emp-row{display:flex;align-items:center;padding:11px 14px;border-bottom:1px solid var(--border);transition:background .12s;gap:10px}
+.emp-row:last-child{border-bottom:none}
+.emp-row:hover{background:var(--bg)}
+.emp-avatar{width:34px;height:34px;border-radius:50%;background:var(--amber-bg);border:1.5px solid rgba(245,158,11,.2);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:var(--amber-d);flex-shrink:0}
+.emp-info{flex:1;min-width:0}
+.emp-name{font-size:.88rem;font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.emp-meta{font-size:.72rem;color:var(--text-3);font-family:'DM Mono',monospace;margin-top:1px}
+.scan-btn{padding:5px 12px;border-radius:7px;font-size:.75rem;font-weight:700;cursor:pointer;border:none;transition:all .15s;font-family:'DM Sans',sans-serif;white-space:nowrap;min-width:70px}
+.scan-enroll{background:var(--amber-bg);border:1px solid rgba(245,158,11,.3);color:var(--amber-d)}
+.scan-in{background:var(--green-bg);border:1px solid rgba(16,185,129,.3);color:var(--green-d)}
+.scan-out{background:var(--red-bg);border:1px solid rgba(239,68,68,.3);color:var(--red-d)}
+.shift-badge{font-size:.65rem;font-weight:700;padding:2px 6px;border-radius:4px;margin-left:4px}
+.shift-badge.in{background:var(--green-bg);color:var(--green-d);border:1px solid rgba(16,185,129,.2)}
+/* summary view */
+.sum-card{background:var(--green-bg);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:18px;text-align:center;margin-bottom:20px}
+.sum-title{font-size:1rem;font-weight:700;color:var(--green-d)}
+/* face modal */
+.overlay{position:fixed;inset:0;background:rgba(13,27,42,.6);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:999;animation:fadein .2s ease;padding:20px}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+.face-modal{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.75rem;max-width:400px;width:100%;box-shadow:var(--shadow-md);animation:up .25s ease}
+.v-wrap{position:relative;width:100%;height:260px;background:#0d1b2a;border-radius:10px;overflow:hidden;margin:14px 0;border:2px solid var(--border)}
+.v-wrap video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.face-ring-wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.face-ring{width:140px;height:140px;border:2px solid rgba(245,158,11,.5);border-radius:50%;box-shadow:0 0 0 4px rgba(245,158,11,.1)}
+.face-ring.in{border-color:rgba(16,185,129,.6);box-shadow:0 0 0 4px rgba(16,185,129,.12)}
+.face-ring.out{border-color:rgba(239,68,68,.6);box-shadow:0 0 0 4px rgba(239,68,68,.12)}
+.face-status{display:flex;align-items:center;gap:8px;font-size:.83rem;padding:9px 14px;border-radius:8px;margin-bottom:12px;font-weight:500;border:1px solid transparent}
+.face-status.idle{background:var(--bg);color:var(--text-2)}
+.face-status.scanning{background:var(--blue-bg);color:var(--blue);border-color:rgba(59,130,246,.2)}
+.face-status.success{background:var(--green-bg);color:var(--green-d);border-color:rgba(16,185,129,.2)}
+.face-status.error{background:var(--red-bg);color:var(--red-d);border-color:rgba(239,68,68,.2)}
+.shift-result{border-radius:9px;padding:14px;margin-bottom:12px;text-align:center;display:none}
+.shift-result.clock-in{background:var(--green-bg);border:1px solid rgba(16,185,129,.25)}
+.shift-result.clock-out{background:var(--blue-bg);border:1px solid rgba(59,130,246,.2)}
+.modal-btns{display:flex;gap:10px;margin-top:12px}
+.modal-btns .btn{flex:1}
+/* toast */
+#toasts{position:fixed;top:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:7px;pointer-events:none}
+.toast{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:9px;padding:11px 15px;font-size:.85rem;font-weight:500;box-shadow:var(--shadow-md);pointer-events:auto;animation:toastIn .3s ease;max-width:300px}
+.toast.success{border-left-color:var(--green)}
+.toast.error{border-left-color:var(--red)}
+.toast.info{border-left-color:var(--blue)}
+@keyframes toastIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
+@keyframes toastOut{from{opacity:1}to{opacity:0;transform:translateX(18px)}}
+.hidden{display:none !important}
+.period-pill{background:var(--navy-2);color:#e2e8f0;font-family:'DM Mono',monospace;font-size:.7rem;font-weight:600;padding:3px 10px;border-radius:12px}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+
+<!-- -- LOGIN --------------------------------------- -->
+<div id="s-login" class="center">
+  <div class="card login-card">
+    <div class="card-hd">
+      <div class="card-icon">🏭</div>
+      <div><div class="card-title">ShipLocal Warehouse</div><div class="card-sub">Authorised personnel only</div></div>
+    </div>
+    <div class="field"><label>Station</label>
+      <select id="sel-station"><option value="">Loading…</option></select>
+    </div>
+    <div class="field"><label>Password</label>
+      <input type="password" id="inp-pass" placeholder="Station password" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn btn-primary" id="btn-login" onclick="doLogin()" style="margin-top:6px">Unlock Station →</button>
+  </div>
+</div>
+
+<!-- -- DEVICE REGISTRATION -------------------------- -->
+<div id="s-reg" class="center hidden">
+  <div class="card login-card">
+    <div class="card-hd">
+      <div class="card-icon">🔒</div>
+      <div><div class="card-title">Device Not Registered</div><div class="card-sub">Admin CCTV approval required</div></div>
+    </div>
+    <p style="font-size:.85rem;color:var(--text-2);line-height:1.65">Show the code below to your admin for CCTV verification.</p>
+    <div class="code-block">
+      <div class="code-val" id="cctv-code">------</div>
+      <div class="code-lbl">Verification Code</div>
+    </div>
+    <button class="btn btn-primary" id="btn-req" onclick="doRequest()">Send Approval Request</button>
+    <div class="status-row hidden" id="wait-row"><div class="pulse"></div><span>Waiting for admin approval…</span></div>
+  </div>
+</div>
+
+<!-- -- MAIN DASHBOARD ------------------------------- -->
+<div id="s-dash" class="hidden">
+  <div class="dash">
+    <div class="dash-hd">
+      <div class="brand">
+        <div class="brand-icon">🏭</div>
+        <div>
+          <div class="brand-title" id="dash-station-title">Station -</div>
+          <div class="brand-sub" id="dash-period-sub">Loading period…</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="period-pill" id="period-pill">-</span>
+      </div>
+    </div>
+    <div class="module-grid" id="module-grid">
+      <div class="module-card" id="mc-bio" onclick="navTo('BIO')">
+        <div class="mc-emoji">👁️</div>
+        <div class="mc-title">Biometric Attendance</div>
+        <div class="mc-sub">Face clock-in / out</div>
+      </div>
+      <div class="module-card" id="mc-kms" onclick="navTo('KMS')">
+        <div class="mc-emoji">🚚</div>
+        <div class="mc-title">Assign IC & KMS</div>
+        <div class="mc-sub">AMX assignment</div>
+        <span class="mc-badge" id="badge-kms" style="display:none"></span>
+      </div>
+      <div class="module-card" id="mc-att" onclick="navTo('ATT')">
+        <div class="mc-emoji">📋</div>
+        <div class="mc-title">Period Attendance</div>
+        <div class="mc-sub">Days worked summary</div>
+        <span class="mc-badge" id="badge-att" style="display:none"></span>
+      </div>
+      <div class="module-card" id="mc-adv" onclick="navTo('ADV')">
+        <div class="mc-emoji">💰</div>
+        <div class="mc-title">Advance Request</div>
+        <div class="mc-sub">Request salary advance</div>
+        <span class="mc-badge" id="badge-adv" style="display:none"></span>
+      </div>
+      <div class="module-card" id="mc-deb" onclick="navTo('DEB')">
+        <div class="mc-emoji">💸</div>
+        <div class="mc-title">Debit Flow</div>
+        <div class="mc-sub">Loss & recovery responses</div>
+        <span class="mc-badge" id="badge-deb" style="display:none"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- -- BIOMETRIC MODULE ----------------------------- -->
+<div id="m-bio" class="module-view">
+  <div class="dash">
+    <div class="module-hd">
+      <div class="mod-title">👁️ Biometric Attendance</div>
+      <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
+    </div>
+    <div class="search-row">
+      <div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="bio-search" placeholder="Search name or ID…" oninput="renderStaff()">
+      </div>
+    </div>
+    <div id="emp-list" class="staff-list"></div>
+  </div>
+</div>
+
+<!-- -- KMS MODULE ----------------------------------- -->
+<div id="m-kms" class="module-view" style="max-width:100%">
+  <div class="dash" style="max-width:100%">
+    <div class="module-hd">
+      <div class="mod-title">🚚 Assign IC & KMS</div>
+      <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
+    </div>
+    <div class="wf-tabs">
+      <button class="wf-tab active" id="kms-t-p" onclick="kmsTab('pending')">Pending <span class="tc" id="kms-cnt-p">0</span></button>
+      <button class="wf-tab" id="kms-t-d" onclick="kmsTab('done')">Review <span class="tc" id="kms-cnt-d">0</span></button>
+    </div>
+    <!-- Pending controls -->
+    <div id="kms-controls-pending" class="search-row">
+      <div class="sw" style="flex:3"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="kms-search" placeholder="Search AMX ID…" oninput="debouncedFilterKms(this.value)">
+      </div>
+      <input list="ic-list" id="bulk-ic" style="flex:2;min-width:0;width:auto" placeholder="Bulk IC name…">
+      <button class="btn btn-ghost btn-sm" style="white-space:nowrap;flex-shrink:0" onclick="bulkAssignIC()">Assign All</button>
+    </div>
+    <!-- Review controls -->
+    <div id="kms-controls-review" class="search-row" style="display:none">
+      <div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input list="ic-list" type="text" id="kms-review-search" placeholder="Filter by IC name…" oninput="filterKmsReview(this.value)">
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="kmsSelectVisible()">☑ Select Visible</button>
+    </div>
+    <!-- Submitted (read-only) search -->
+    <div id="kms-controls-submitted" class="search-row" style="display:none">
+      <div class="sw" style="flex:1"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="kms-submitted-search" placeholder="Search AMX ID or IC name…" oninput="debouncedFilterKms(this.value)">
+      </div>
+    </div>
+    <div class="tbl-wrap" style="max-height:58vh;overflow-y:auto;overflow-x:auto">
+      <table class="kms-tbl"><colgroup id="kms-cols"></colgroup><thead id="kms-head"></thead><tbody id="kms-body"></tbody></table>
+    </div>
+    <div class="action-bar kms-action-sticky" id="kms-actions"></div>
+    <datalist id="ic-list"></datalist>
+  </div>
+</div>
+
+<!-- -- ATT MODULE ----------------------------------- -->
+<div id="m-att" class="module-view">
+  <div class="dash">
+    <div class="module-hd">
+      <div class="mod-title">📋 Period Attendance</div>
+      <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
+    </div>
+    <p style="font-size:.83rem;color:var(--text-2);margin-bottom:14px">
+      Days auto-calculated from biometric data. Adjust if needed before submitting.
+    </p>
+    <div class="wf-tabs">
+      <button class="wf-tab active" id="att-t-p" onclick="attTab('pending')">Pending <span class="tc" id="att-cnt-p">0</span></button>
+      <button class="wf-tab" id="att-t-d" onclick="attTab('review')">Review <span class="tc" id="att-cnt-d">0</span></button>
+    </div>
+    <div class="att-grid" id="att-grid"></div>
+    <div class="action-bar" id="att-actions"></div>
+  </div>
+</div>
+
+<!-- -- ADV MODULE ----------------------------------- -->
+<div id="m-adv" class="module-view">
+  <div class="dash">
+    <div class="module-hd">
+      <div class="mod-title">💰 Advance Request</div>
+      <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
+    </div>
+    <div class="wf-tabs">
+      <button class="wf-tab active" id="adv-t-p" onclick="advTab('pending')">Pending <span class="tc" id="adv-cnt-p">0</span></button>
+      <button class="wf-tab" id="adv-t-d" onclick="advTab('review')">Review <span class="tc" id="adv-cnt-d">0</span></button>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>IC Name</th><th>ID</th><th>Amount (₹)</th><th>Reason</th></tr></thead>
+      <tbody id="adv-body"></tbody>
+    </table></div>
+    <div class="action-bar" id="adv-actions"></div>
+  </div>
+</div>
+
+<!-- -- DEB MODULE ----------------------------------- -->
+<div id="m-deb" class="module-view">
+  <div class="dash">
+    <div class="module-hd">
+      <div class="mod-title">💸 Debit Flow</div>
+      <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
+    </div>
+    <div class="wf-tabs">
+      <button class="wf-tab active" id="deb-t-f" onclick="debTab('final')">Final Loss</button>
+      <button class="wf-tab" id="deb-t-r" onclick="debTab('recovery')">Recovery / Other</button>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>TID</th><th>Amount</th><th>Confirm By</th><th>Decision / Details</th><th>Remarks</th></tr></thead>
+      <tbody id="deb-body"></tbody>
+    </table></div>
+    <button class="btn btn-primary" onclick="submitDeb()" id="deb-submit-btn" style="margin-top:14px">FINAL SUBMIT DEBIT RESPONSES</button>
+  </div>
+</div>
+
+<!-- -- SUMMARY VIEW --------------------------------- -->
+<div id="m-sum" class="module-view" style="max-width:100%">
+  <div class="dash">
+    <div class="sum-card"><div class="sum-title" id="sum-title">✅ Data Submitted</div></div>
+    <div class="tbl-wrap" style="max-height:58vh;overflow-y:auto;overflow-x:auto"><table><colgroup id="sum-cols"></colgroup><thead id="sum-head"></thead><tbody id="sum-body"></tbody></table></div>
+    <button class="btn btn-primary" onclick="goHome()" style="margin-top:16px">← Back to Dashboard</button>
+  </div>
+</div>
+
+<!-- -- FACE MODAL ----------------------------------- -->
+<div id="face-overlay" class="overlay hidden">
+  <div class="face-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div>
+        <div style="font-size:.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em" id="face-mode-lbl">FACE SCAN</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--navy)" id="face-name-lbl">-</div>
+      </div>
+      <button onclick="closeFace()" style="background:none;border:none;cursor:pointer;color:var(--text-3);font-size:1.4rem;line-height:1;padding:4px">×</button>
+    </div>
+    <div id="shift-result" class="shift-result">
+      <div class="sr-icon" id="sr-icon">✓</div>
+      <div style="font-size:.95rem;font-weight:700;color:var(--navy)" id="sr-title">-</div>
+      <div style="font-size:.8rem;color:var(--text-2);margin-top:3px" id="sr-sub">-</div>
+    </div>
+    <div class="v-wrap" id="v-wrap">
+      <video id="face-video" autoplay muted playsinline></video>
+      <div class="face-ring-wrap"><div class="face-ring" id="face-ring"></div></div>
+    </div>
+    <div class="face-status idle" id="face-status"><span id="face-status-txt">Initialising camera…</span></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" style="flex:none;padding:10px 18px" onclick="closeFace()">Cancel</button>
+      <button class="btn btn-primary" id="btn-face-action" disabled onclick="doFaceAction()">Please wait…</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/wh-core.js"></script>
+<script src="js/wh-bio.js"></script>
+<script src="js/wh-kms.js"></script>
+<script src="js/wh-att.js"></script>
+<script src="js/wh-adv.js"></script>
+<script src="js/wh-deb.js"></script>
+<script src="js/wh-face.js"></script>
+</body>
+</body>
+</html>

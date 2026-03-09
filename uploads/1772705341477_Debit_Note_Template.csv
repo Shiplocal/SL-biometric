@@ -1,0 +1,16 @@
+﻿tid,impact_date,loss_bucket,loss_sub_bucket,shipment_type,station,value,Debit Note Confirm by,Cash Recovery Type,CM/Manager Confirm,Remarks
+365433739065,03-12-2025,Ageing,del_after_webreject,Delivery,ANDD,1190,Imranbhai,Recovery,Sachin Bhoi,2 emi cut
+365477561868,03-12-2025,Ageing,del_after_webreject,Delivery,BEEG,1190,Amitbhai,Recovery,Amit Salunke,
+363793872804,29-09-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,GJAB,928,Ankitbhai,Recovery,KALEEM KHAN,
+629584318389,11-02-2026,Ageing,Da side RTS Pending,ReturnPickup,VDDA,4499,Sunil,Recovery,Umeshbhai,
+514934645935,12-02-2026,Ageing,Da side RTS Pending,Delivery,ANDD,760.95,Imranbhai,Recovery,Sachin Bhoi,
+366553012656,16-01-2026,Ageing,Shipment Not Depart(Ageing),Delivery,VDDA,1154,Sunil,Recovery,Umeshbhai,
+166670518655,10-12-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,GJAB,1399,Amit Salunke,Recovery,Amitbhai,
+514907892717,08-02-2026,Ageing,Manully RTS,ReturnPickup,ANDD,5950,Harendra Sahu,Recovery,Harendrabhai,Next month cut
+366436904641,20-01-2026,Ageing,Shipment Not Departed,Delivery,DULD,1359,Harendra Sahu,Recovery,Harendrabhai,Next month cut
+166932802713,20-01-2026,Ageing,Shipment Not Departed,Delivery,GJAB,985,ayan,Recovery,Pravinbhai,
+166932089794,19-01-2026,Ageing,Shipment Not Departed,Delivery,GJAB,"1,801.85",ayan,Recovery,Pravinbhai,2 emi cut
+363793872804,29-09-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,BEEG,928,ayan,Recovery,Pravinbhai,
+363793872805,29-09-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,VDDA,928,MUSAB KHAN,Recovery,Ankitbhai,
+363793872806,29-09-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,VDDA,928,Sufiyan Shaikh,Recovery,Ankitbhai,
+363793872807,29-09-2025,Package Loss,Fluid received in SCMS but no induct,Delivery,ANDD,928,Saquib Sayyed,Recovery,Ankitbhai,
