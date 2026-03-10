@@ -9,7 +9,20 @@ const crypto   = require('crypto');
 const path     = require('path');
 const multer   = require('multer');
 const csvParse = require('csv-parse');
-const csv = { parse: (str, opts) => { const results = []; csvParse(str, {...opts, sync: true}, (err, out) => { if (out) results.push(...out); }); return results; } };
+// csv-parse v5+ moved sync to csv-parse/sync; v4 used callback with sync:true
+let _syncParse;
+try {
+  _syncParse = require('csv-parse/sync').parse;
+} catch(e) {
+  // v4 fallback: wrap callback API as sync
+  const _fn = typeof csvParse === 'function' ? csvParse : csvParse.parse;
+  _syncParse = (str, opts) => {
+    const results = [];
+    _fn(str, {...opts, sync: true}, (err, out) => { if (out) results.push(...out); });
+    return results;
+  };
+}
+const csv = { parse: (str, opts) => _syncParse(str, opts) };
 
 const app    = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -492,15 +505,21 @@ app.get('/api/station-data/:station', async (req, res) => {
       attLog = al;
     }
 
-    // If ADV locked, get submitted log
+    // Always load advances for current period (not just when locked)
     let advLog = [];
-    if (lockMap.ADV) {
-      const [adl] = await pool.execute('SELECT ic_name,amount FROM log_advances WHERE station_code=? AND period_label=?', [station, pl]);
+    {
+      const [adl] = await pool.execute(
+        'SELECT ic_id,ic_name,amount,reason,verified_by,submitted_at FROM log_advances WHERE station_code=? AND period_label=? ORDER BY submitted_at DESC',
+        [station, pl]
+      );
       advLog = adl;
     }
 
-    // Debit items for this station+period
-    const [debitItems] = await pool.execute('SELECT * FROM debit_data WHERE station_code=? AND period_label=?', [station, pl]);
+    // Debit items for WH — only published (not draft/answered/sent_back)
+    const [debitItems] = await pool.execute(
+      "SELECT * FROM debit_data WHERE station_code=? AND status='published' ORDER BY debit_date,tid",
+      [station]
+    );
 
     const periodDays = Math.round((new Date(period.period_end) - new Date(period.period_start)) / 86400000) + 1;
 
@@ -558,49 +577,102 @@ app.post('/api/submit-att', async (req, res) => {
 
 // -- ADV Submit ---------------------------------------
 app.post('/api/submit-adv', async (req, res) => {
-  const {station, periodLabel, rows} = req.body;
-  if (await isLocked(station, 'ADV', periodLabel)) return res.status(409).json({error:'Already submitted'});
+  const {station, periodLabel, rows, verifiedBy} = req.body;
+  const eligible = (rows||[]).filter(r => r.amount && parseFloat(r.amount) > 0);
+  if (!eligible.length) return res.status(400).json({error:'No advances with an amount.'});
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    for (const r of rows) {
-      if (r.amount && parseFloat(r.amount) > 0) {
-        await conn.execute(
-          `INSERT INTO log_advances (station_code,ic_id,ic_name,period_label,amount,reason) VALUES (?,?,?,?,?,?)`,
-          [station, r.icId, r.icName, periodLabel, r.amount, r.reason||'']
-        );
+    const inserted = [], skipped = [];
+    for (const r of eligible) {
+      // Check if this IC already has an advance this period for this station
+      const [existing] = await conn.execute(
+        `SELECT id FROM log_advances WHERE station_code=? AND ic_id=? AND period_label=? LIMIT 1`,
+        [station, r.icId, periodLabel]
+      );
+      if (existing.length) {
+        skipped.push(r.icName);
+        continue;
       }
+      await conn.execute(
+        `INSERT INTO log_advances (station_code,ic_id,ic_name,period_label,amount,reason,verified_by) VALUES (?,?,?,?,?,?,?)`,
+        [station, r.icId, r.icName, periodLabel, r.amount, r.reason||'', verifiedBy||null]
+      );
+      inserted.push(r.icName);
     }
-    await lockModule(station, 'ADV', periodLabel);
     await conn.commit();
-    res.json({success:true});
+    res.json({success:true, inserted: inserted.length, insertedIds: inserted, skipped});
   } catch(e) { await conn.rollback(); res.status(500).json({error:'Failed'}); }
   finally { conn.release(); }
 });
 
 // -- DEB Submit ---------------------------------------
 app.post('/api/submit-deb', async (req, res) => {
-  const {station, periodLabel, rows} = req.body;
-  if (await isLocked(station, 'DEB', periodLabel)) return res.status(409).json({error:'Already submitted'});
+  const {station, periodLabel, rows, verifiedBy} = req.body;
+  // Filter to only rows that have a response filled in — New rows are categorised separately
+  const filled = (rows||[]).filter(r => {
+    if (r.subType === 'New') return false;
+    return r.subType==='Final Loss' ? !!r.decision : !!(r.dispute||r.tt||r.orphan||r.remarks);
+  });
+  if (!filled.length) return res.status(400).json({error:'No completed responses to submit'});
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    for (const r of rows) {
+    for (const r of filled) {
+      const decision = r.subType==='Final Loss' ? (r.decision||'') : (r.dispute||'');
       await conn.execute(
-        `INSERT INTO debit_responses (station_code,tid,sub_type,decision,tt_number,orphan_ref,remarks,submitted_by,period_label) VALUES (?,?,?,?,?,?,?,?,?)`,
-        [station, r.tid, r.subType||'', r.decision||'N/A', r.tt||'', r.orphan||'', r.remarks||'', r.user||'Manager', periodLabel]
+        `INSERT INTO debit_responses
+           (station_code,tid,sub_type,decision,tt_number,orphan_ref,remarks,submitted_by,period_label,verified_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           decision=VALUES(decision), tt_number=VALUES(tt_number),
+           orphan_ref=VALUES(orphan_ref), remarks=VALUES(remarks),
+           submitted_by=VALUES(submitted_by), submitted_at=NOW(),
+           verified_by=VALUES(verified_by)`,
+        [station, r.tid, r.subType||'', decision,
+         r.tt||'', r.orphan||'', r.remarks||'', r.user||'Manager',
+         periodLabel, verifiedBy||null]
+      );
+      await conn.execute(
+        `UPDATE debit_data SET status='answered' WHERE tid=? AND station_code=? AND status='published'`,
+        [r.tid, station]
       );
     }
-    await lockModule(station, 'DEB', periodLabel);
+
+    const [remaining] = await conn.execute(
+      `SELECT COUNT(*) AS cnt FROM debit_data WHERE station_code=? AND status='published'`,
+      [station]
+    );
+    const allDone = remaining[0].cnt === 0;
+    if (allDone) await lockModule(station, 'DEB', periodLabel);
+
     await conn.commit();
-    res.json({success:true});
-  } catch(e) { await conn.rollback(); res.status(500).json({error:'Failed'}); }
-  finally { conn.release(); }
+    res.json({success:true, submitted: filled.length, allDone});
+  } catch(e) {
+    await conn.rollback();
+    res.status(500).json({error: e.message});
+  } finally { conn.release(); }
 });
 
-// -------------------------------------------------------
-//  ADMIN - DATA MANAGEMENT
-// -------------------------------------------------------
+// WH categorise: move New → Recovery/Case Open, or Recovery/Case Open → New
+app.patch('/api/wh/debit-categorise', async (req, res) => {
+  const {station, tid, sub_type} = req.body;
+  const allowed = ['New','Recovery','Case Open'];
+  if (!allowed.includes(sub_type)) return res.status(400).json({error:'Invalid category'});
+  if (!station || !tid) return res.status(400).json({error:'station and tid required'});
+  try {
+    const [result] = await pool.execute(
+      `UPDATE debit_data SET sub_type=? WHERE tid=? AND station_code=? AND status='published'`,
+      [sub_type, tid, station]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({error:'Row not found or not published'});
+    res.json({success:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+
 
 // Upload EDSP/AMX data via CSV
 app.post('/api/admin/upload-edsp', upload.single('file'), async (req, res) => {
@@ -710,11 +782,37 @@ app.get('/api/admin/adv-report', async (req, res) => {
 });
 
 app.get('/api/admin/deb-report', async (req, res) => {
-  const {period} = req.query;
+  const {month, station} = req.query;
   try {
-    const [r] = await pool.execute('SELECT * FROM debit_responses WHERE period_label=? ORDER BY station_code,tid', [period]);
-    res.json(r);
-  } catch(e) { res.status(500).json({error:'Failed'}); }
+    let sql = `SELECT d.tid, d.station_code, d.debit_date, d.bucket, d.loss_sub_bucket,
+                      d.shipment_type, d.ic_name, d.amount, d.confirm_by,
+                      d.cash_recovery_type, d.cm_confirm, d.publish_month,
+                      r.decision, r.tt_number, r.orphan_ref,
+                      r.remarks, r.submitted_at, r.sub_type, r.verified_by
+               FROM debit_data d
+               JOIN debit_responses r ON r.tid = d.tid AND r.station_code = d.station_code
+               WHERE 1=1`;
+    const params = [];
+    if (month)   { sql += ' AND d.publish_month=?';   params.push(month); }
+    if (station) { sql += ' AND d.station_code=?';    params.push(station); }
+    sql += ' ORDER BY d.station_code, d.tid';
+    const [rows] = await pool.execute(sql, params);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error: e.message}); }
+});
+
+// Return distinct publish_months that have answered entries (for admin filter dropdown)
+app.get('/api/admin/deb-months', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT DISTINCT d.publish_month
+       FROM debit_data d
+       JOIN debit_responses r ON r.tid=d.tid AND r.station_code=d.station_code
+       WHERE d.publish_month IS NOT NULL
+       ORDER BY d.publish_month DESC LIMIT 24`
+    );
+    res.json(rows.map(r => r.publish_month));
+  } catch(e) { res.status(500).json({error: e.message}); }
 });
 
 app.get('/api/admin/submission-status', async (req, res) => {
@@ -867,6 +965,19 @@ app.post('/api/admin/copy-edsp-to-active', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
+app.patch('/api/admin/debit-data/:id/subtype', async (req, res) => {
+  const {sub_type} = req.body;
+  const allowed = ['Final Loss','New'];
+  if (!allowed.includes(sub_type)) return res.status(400).json({error:'Invalid sub_type — must be Final Loss or New'});
+  try {
+    await pool.execute(
+      `UPDATE debit_data SET sub_type=? WHERE id=? AND status='draft'`,
+      [sub_type, req.params.id]
+    );
+    res.json({success:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 app.delete('/api/admin/debit-data/:id', async (req, res) => {
   try { await pool.execute('DELETE FROM debit_data WHERE id=?', [req.params.id]); res.json({success:true}); }
   catch(e) { res.status(500).json({error:e.message}); }
@@ -874,22 +985,25 @@ app.delete('/api/admin/debit-data/:id', async (req, res) => {
 
 app.post('/api/admin/debit-data/single', async (req, res) => {
   const {tid, station_code, impact_date, loss_bucket, loss_sub_bucket, shipment_type,
-         ic_name, value, confirm_by, cash_recovery_type, cm_confirm, remarks} = req.body;
+         cluster, ic_name, value, confirm_by, cash_recovery_type, cm_confirm,
+         sub_type, remarks} = req.body;
   if (!tid || !station_code) return res.status(400).json({error:'tid and station_code required'});
   function toYMD(s) { if(!s) return null; const p=s.trim().split('-'); if(p.length!==3) return null; if(p[0].length===4) return s; return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`; }
   try {
     await pool.execute(
       `INSERT INTO debit_data (tid,station_code,debit_date,bucket,loss_sub_bucket,shipment_type,
-         ic_name,amount,confirm_by,cash_recovery_type,cm_confirm,remarks,status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'draft')
+         cluster,ic_name,amount,confirm_by,cash_recovery_type,cm_confirm,sub_type,remarks,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')
        ON DUPLICATE KEY UPDATE debit_date=VALUES(debit_date),bucket=VALUES(bucket),
          loss_sub_bucket=VALUES(loss_sub_bucket),shipment_type=VALUES(shipment_type),
-         ic_name=VALUES(ic_name),amount=VALUES(amount),confirm_by=VALUES(confirm_by),
-         cash_recovery_type=VALUES(cash_recovery_type),cm_confirm=VALUES(cm_confirm),
-         remarks=VALUES(remarks)`,
-      [tid.trim(), station_code.toUpperCase().trim(), toYMD(impact_date), loss_bucket||'',
-       loss_sub_bucket||null, shipment_type||null, ic_name||null, parseFloat(value)||0,
-       confirm_by||'', cash_recovery_type||null, cm_confirm||null, remarks||null]
+         cluster=VALUES(cluster),ic_name=VALUES(ic_name),amount=VALUES(amount),
+         confirm_by=VALUES(confirm_by),cash_recovery_type=VALUES(cash_recovery_type),
+         cm_confirm=VALUES(cm_confirm),sub_type=VALUES(sub_type),remarks=VALUES(remarks)`,
+      [tid.trim(), station_code.toUpperCase().trim(), toYMD(impact_date),
+       loss_bucket||'', loss_sub_bucket||null, shipment_type||null,
+       cluster||null, ic_name||null, parseFloat(value)||0,
+       confirm_by||'', cash_recovery_type||null, cm_confirm||null,
+       (['Final Loss','New'].includes(sub_type) ? sub_type : 'New'), remarks||null]
     );
     res.json({success:true});
   } catch(e) { res.status(500).json({error:e.message}); }
@@ -912,9 +1026,18 @@ app.post('/api/admin/debit-publish', async (req, res) => {
   try {
     const month = new Date().toISOString().substring(0,7);
     if (ids && ids.length) {
-      await pool.execute(`UPDATE debit_data SET status='published',published_at=NOW(),publish_month=? WHERE id IN (${ids.map(()=>'?').join(',')})`, [month,...ids]);
+      // Only publish entries that are still in draft — never re-publish
+      await pool.execute(
+        `UPDATE debit_data SET status='published',published_at=NOW(),publish_month=?
+         WHERE id IN (${ids.map(()=>'?').join(',')}) AND status='draft'`,
+        [month, ...ids]
+      );
     } else {
-      await pool.execute(`UPDATE debit_data SET status='published',published_at=NOW(),publish_month=? WHERE COALESCE(status,'draft')='draft'`, [month]);
+      await pool.execute(
+        `UPDATE debit_data SET status='published',published_at=NOW(),publish_month=?
+         WHERE status='draft'`,
+        [month]
+      );
     }
     res.json({success:true});
   } catch(e) { res.status(500).json({error:e.message}); }
@@ -933,6 +1056,37 @@ app.get('/api/admin/debit-queue', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 })
 
+app.post('/api/admin/debit-sendback-tids', async (req, res) => {
+  const {tids, station} = req.body;
+  if (!tids || !tids.length || !station) return res.status(400).json({error:'tids and station required'});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const ph = tids.map(() => '?').join(',');
+    // Reset debit_data status back to published so WH sees it again
+    await conn.execute(
+      `UPDATE debit_data SET status='published' WHERE station_code=? AND tid IN (${ph})`,
+      [station, ...tids]
+    );
+    // Delete the existing responses so WH can re-submit
+    await conn.execute(
+      `DELETE FROM debit_responses WHERE station_code=? AND tid IN (${ph})`,
+      [station, ...tids]
+    );
+    // Also unlock the DEB module for this station if it was locked
+    await conn.execute(
+      `UPDATE config_status SET status='OPEN', unlocked_by='Admin-SendBack', unlocked_at=NOW()
+       WHERE station_code=? AND module='DEB'`,
+      [station]
+    );
+    await conn.commit();
+    res.json({success: true});
+  } catch(e) {
+    await conn.rollback();
+    res.status(500).json({error: e.message});
+  } finally { conn.release(); }
+});
+
 app.post('/api/admin/debit-sendback', async (req, res) => {
   const {ids} = req.body;
   if (!ids||!ids.length) return res.status(400).json({error:'No ids'});
@@ -942,65 +1096,235 @@ app.post('/api/admin/debit-sendback', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
-app.get('/api/admin/debit-template', (req, res) => {
-  const headers = ['tid','impact_date','loss_bucket','loss_sub_bucket','shipment_type','station','value','Debit Note Confirm by','Cash Recovery Type','CM/Manager Confirm','Remarks'];
-  const example = ['365433739065','15-01-2026','Lost Parcel','Short Delivery','Delivery','ANDD','245.50','Rahul Sharma','IC Payment','YES','Parcel missing from bag'];
-  const notes   = ['Tracking ID','DD-MM-YYYY','e.g. Lost / Damaged','Sub-category','Delivery/ReturnPickup/MFN','Station code','Amount in Rs','Confirming person','IC Payment/SHIP BANK','YES/NO','Remarks'];
-  const csv = '\uFEFF' + [headers,example,notes].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  res.setHeader('Content-Type','text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition','attachment; filename="Debit_Note_Template.csv"');
-  res.send(csv);
+// WH debit history — answered items for this station, last 6 months, joined with responses
+app.get('/api/deb-history/:station', async (req, res) => {
+  const station = req.params.station;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT d.id, d.tid, d.debit_date, d.bucket, d.loss_sub_bucket, d.shipment_type,
+              d.ic_name, d.amount, d.confirm_by, d.cash_recovery_type, d.cm_confirm,
+              d.publish_month, d.published_at, d.sub_type,
+              r.decision, r.tt_number, r.orphan_ref, r.remarks AS wh_remarks,
+              r.submitted_at
+       FROM debit_data d
+       JOIN debit_responses r ON r.tid = d.tid AND r.station_code = d.station_code
+       WHERE d.station_code = ?
+         AND d.status = 'answered'
+         AND d.published_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+       ORDER BY d.published_at DESC, d.tid`,
+      [station]
+    );
+    // Group by publish_month
+    const grouped = {};
+    rows.forEach(r => {
+      const month = r.publish_month || (r.published_at ? String(r.published_at).substring(0,7) : 'Unknown');
+      if (!grouped[month]) grouped[month] = [];
+      grouped[month].push(r);
+    });
+    // Return as array of {month, label, items} sorted newest first
+    const months = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+    const result = months.map(m => {
+      const [yr, mo] = m.split('-');
+      const label = mo && yr ? new Date(yr, parseInt(mo)-1, 1).toLocaleDateString('en-IN',{month:'long',year:'numeric'}) : m;
+      return { month: m, label, items: grouped[m] };
+    });
+    res.json(result);
+  } catch(e) { console.error('deb-history:', e); res.status(500).json({error: e.message}); }
 });
 
-app.post('/api/admin/debit-upload', async (req, res) => {
-  if (req.headers['x-cron-secret'] !== 'sl-midnight-2026') return res.status(403).json({error:'Forbidden'});
-  const {filePath} = req.body;
-  if (!filePath) return res.status(400).json({error:'Missing filePath'});
-  const fs = require('fs');
-  if (!fs.existsSync(filePath)) return res.status(404).json({error:'File not found'});
+app.get('/api/admin/debit-template', (req, res) => {
+  const headers  = ['tid','impact_date','loss_bucket','loss_sub_bucket','shipment_type','station','cluster','user_name','value','confirm_by','cash_recovery_type','cm_confirm','debit_type','remarks'];
+  const example1 = ['365433739065','03-12-2025','Ageing','Shipment Not Departed','Delivery','ANDD','GJ','Rahul Sharma','1190.00','Amitbhai','IC Payment','YES','Final Loss','Confirmed by CM'];
+  const example2 = ['629518827741','26-01-2026','WRTS but MDR','Wrong Photo at RTS','ReturnPickup','VDDA','GJ','Harendra Sahu','2111.00','Amitbhai','SHIP BANK','NO','New','WH to categorise as Recovery or Case Open'];
+  const notes = [
+    'Tracking ID (required) — numeric, or Short Cash / Penalty for non-TID entries',
+    'DD-MM-YYYY format (required)',
+    'Ageing / Package Loss / WRTS but MDR / SLP Mail / Panalty',
+    'Sub-category free text e.g. Shipment Not Departed',
+    'Delivery / ReturnPickup / MFN',
+    'Station code e.g. ANDD (required)',
+    'Cluster / region code e.g. GJ, MH (optional)',
+    'IC or DA name responsible for the loss',
+    'Amount in ₹ — no commas e.g. 1801.85 (required)',
+    'Name of manager / AM confirming the debit note',
+    'IC Payment / SHIP BANK / CASH',
+    'YES or NO — CM / Manager confirmation',
+    'Ignored on upload — all CSV entries are created as New by default. Mark as Final Loss individually in the admin queue after upload.',
+    'Any additional notes or context'
+  ];
+  const rows = [headers, example1, example2, notes];
+  const csvOut = '\uFEFF' + rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  res.setHeader('Content-Type','text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition','attachment; filename="Debit_Note_Template.csv"');
+  res.send(csvOut);
+});
+
+// ── DEBIT PARSE — returns rows as JSON for preview, no DB write ──
+app.post('/api/admin/debit-parse', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({error:'No file received'});
   try {
-    function toYMD(s){if(!s)return null;const p=s.trim().split('-');if(p.length!==3)return null;if(p[0].length===4)return s;return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;}
-    function normTid(s){if(!s)return '';s=s.trim();if(/^[0-9.]+[eE][+][0-9]+$/.test(s)){try{return BigInt(Math.round(parseFloat(s))).toString();}catch(e){return s;}}return s;}
-    const raw = csv.parse(fs.readFileSync(filePath,'utf8'), {columns:true, skip_empty_lines:true, to:500});
-    const rows = raw.filter(r => { const t=normTid(r['tid']||''); return t&&t!=='tid'&&t.toLowerCase()!=='tracking id (required)'; });
+    const content = req.file.buffer.toString('utf8').replace(/^\uFEFF/,'');
+    function toYMD(s){
+      if(!s) return '';
+      const p = s.trim().split('-');
+      if(p.length!==3) return s.trim();
+      if(p[0].length===4) return s.trim();
+      return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+    }
+    function normTid(s){
+      if(!s) return '';
+      s = s.trim();
+      if(/^[0-9.]+[eE][+][0-9]+$/.test(s)){
+        try{ return BigInt(Math.round(parseFloat(s))).toString(); }catch(e){ return s; }
+      }
+      return s;
+    }
+    function normAmt(s){ if(!s) return 0; return parseFloat(String(s).replace(/,/g,'')) || 0; }
+
+    const raw = csv.parse(content, {columns:true, skip_empty_lines:true, to:500});
+    const junkTids = new Set(['tid','tracking id (required)','tracking id']);
+    const rows = raw
+      .filter(r => {
+        const t = normTid(r['tid']||'').toLowerCase();
+        return t && !junkTids.has(t) && !t.startsWith('. column');
+      })
+      .map(r => ({
+        tid:            normTid(r['tid']||''),
+        station:        (r['station']||r['station_code']||'').toUpperCase().trim(),
+        impact_date:    toYMD(r['impact_date']||''),
+        loss_bucket:    r['loss_bucket'] || '',
+        loss_sub_bucket:r['loss_sub_bucket'] || '',
+        shipment_type:  r['shipment_type'] || '',
+        cluster:        r['cluster'] || r['Cluster'] || '',
+        ic_name:        r['user_name'] || r['ic_name'] || '',
+        amount:         normAmt(r['value'] || r['amount'] || '0'),
+        confirm_by:     r['confirm_by'] || '',
+        cash_recovery_type: r['cash_recovery_type'] || '',
+        cm_confirm:     r['cm_confirm'] || '',
+        remarks:        r['remarks'] || r['Remarks'] || '',
+      }))
+      .filter(r => r.tid && r.station);
+
+    res.json({success:true, rows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── DEBIT IMPORT ROWS — accepts pre-parsed (possibly edited) JSON rows ──
+app.post('/api/admin/debit-import-rows', async (req, res) => {
+  const {rows} = req.body;
+  if (!rows||!rows.length) return res.status(400).json({error:'No rows'});
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
+  let inserted=0, skipped=0, firstError=null;
+  for (const r of rows) {
+    if (!r.tid || !r.station) { skipped++; continue; }
+    try {
+      await conn.execute(
+        `INSERT INTO debit_data
+           (tid, station_code, debit_date, bucket, loss_sub_bucket, shipment_type,
+            cluster, ic_name, amount, confirm_by, cash_recovery_type, cm_confirm,
+            sub_type, remarks, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')
+         ON DUPLICATE KEY UPDATE
+           debit_date=VALUES(debit_date), bucket=VALUES(bucket),
+           loss_sub_bucket=VALUES(loss_sub_bucket), amount=VALUES(amount),
+           cluster=VALUES(cluster), ic_name=VALUES(ic_name),
+           sub_type=VALUES(sub_type)`,
+        [r.tid, r.station, r.impact_date||null, r.loss_bucket||'', r.loss_sub_bucket||null,
+         r.shipment_type||null, r.cluster||null, r.ic_name||null, r.amount||0,
+         r.confirm_by||'', r.cash_recovery_type||null, r.cm_confirm||null, 'New', r.remarks||null]
+      );
+      inserted++;
+    } catch(e2) { skipped++; firstError = firstError || `${e2.message} [tid=${r.tid}]`; }
+  }
+  await conn.commit();
+  conn.release();
+  res.json({success:true, inserted, skipped, firstError});
+});
+
+app.post('/api/admin/debit-upload', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({error:'No file received'});
+  try {
+    const content = req.file.buffer.toString('utf8').replace(/^\uFEFF/,''); // strip BOM
+
+    // DD-MM-YYYY or YYYY-MM-DD → YYYY-MM-DD
+    function toYMD(s){
+      if(!s) return null;
+      const p = s.trim().split('-');
+      if(p.length!==3) return null;
+      if(p[0].length===4) return s.trim();
+      return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+    }
+    function normTid(s){
+      if(!s) return '';
+      s = s.trim();
+      if(/^[0-9.]+[eE][+][0-9]+$/.test(s)){
+        try{ return BigInt(Math.round(parseFloat(s))).toString(); }catch(e){ return s; }
+      }
+      return s;
+    }
+    function normAmt(s){
+      if(!s) return 0;
+      return parseFloat(String(s).replace(/,/g,'')) || 0;
+    }
+
+    const raw = csv.parse(content, {columns:true, skip_empty_lines:true, to:500});
+
+    const junkTids = new Set(['tid','tracking id (required)','tracking id']);
+    const rows = raw.filter(r => {
+      const t = normTid(r['tid']||'').toLowerCase();
+      return t && !junkTids.has(t) && !t.startsWith('. column');
+    });
+
     const conn = await pool.getConnection();
     await conn.beginTransaction();
-    let inserted=0, skipped=0;
+    let inserted=0, skipped=0, firstError=null;
+
     for (const r of rows) {
-      const tid = normTid(r['tid']||'');
+      const tid     = normTid(r['tid']||'');
       const station = (r['station']||r['station_code']||'').toUpperCase().trim();
-      if (!tid||!station) { skipped++; continue; }
+      if (!tid || !station) { skipped++; continue; }
+
+      const icName    = r['user_name']   || r['User Name']             || r['ic_name']           || null;
+      const confirmBy = r['confirm_by']  || r['Debit Note Confirm by'] || r['confirm by']         || '';
+      const recType   = r['cash_recovery_type'] || r['Cash Recovery Type'] || null;
+      const cmConfirm = r['cm_confirm']  || r['CM Confirm']            || r['CM/Manager Confirm'] || null;
+      const cluster   = r['cluster']     || r['Cluster']               || null;
+      const amount    = normAmt(r['value'] || r['amount'] || '0');
+
+      // All CSV uploads default to New — admin marks Final Loss individually via the queue
+      const subType = 'New';
+
+
+
+
       try {
-        // Try with new columns first, fall back to original schema
-        try {
-          await conn.execute(
-            `INSERT INTO debit_data (tid,station_code,debit_date,bucket,loss_sub_bucket,shipment_type,
-               ic_name,amount,confirm_by,cash_recovery_type,cm_confirm,remarks,status)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'draft')
-             ON DUPLICATE KEY UPDATE debit_date=VALUES(debit_date),bucket=VALUES(bucket),
-               loss_sub_bucket=VALUES(loss_sub_bucket),amount=VALUES(amount)`,
-            [tid, station, toYMD(r['impact_date']||''), r['loss_bucket']||'',
-             r['loss_sub_bucket']||null, r['shipment_type']||null, r['ic_name']||null,
-             parseFloat(r['value'])||0, r['Debit Note Confirm by']||'',
-             r['Cash Recovery Type']||null, r['CM/Manager Confirm']||null,
-             r['Remarks']||r['remarks']||null]
-          );
-        } catch(eFull) {
-          // Fallback: insert only original columns
-          await conn.execute(
-            `INSERT INTO debit_data (tid,station_code,debit_date,bucket,amount,confirm_by,sub_type)
-             VALUES (?,?,?,?,?,?,?)
-             ON DUPLICATE KEY UPDATE debit_date=VALUES(debit_date),bucket=VALUES(bucket),amount=VALUES(amount)`,
-            [tid, station, toYMD(r['impact_date']||''), r['loss_bucket']||'',
-             parseFloat(r['value'])||0, r['Debit Note Confirm by']||'',
-             r['loss_sub_bucket']||null]
-          );
-        }
+        await conn.execute(
+          `INSERT INTO debit_data
+             (tid, station_code, debit_date, bucket, loss_sub_bucket, shipment_type,
+              cluster, ic_name, amount, confirm_by, cash_recovery_type, cm_confirm,
+              sub_type, remarks, status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')
+           ON DUPLICATE KEY UPDATE
+             debit_date=VALUES(debit_date), bucket=VALUES(bucket),
+             loss_sub_bucket=VALUES(loss_sub_bucket), amount=VALUES(amount),
+             cluster=VALUES(cluster), ic_name=VALUES(ic_name),
+             sub_type=VALUES(sub_type)`,
+          [tid, station,
+           toYMD(r['impact_date']||''),
+           r['loss_bucket'] || '',
+           r['loss_sub_bucket'] || null,
+           r['shipment_type'] || null,
+           cluster, icName, amount, confirmBy, recType, cmConfirm, subType,
+           r['remarks'] || r['Remarks'] || null]
+        );
         inserted++;
-      } catch(e2) { skipped++; }
+      } catch(e2) { skipped++; firstError = firstError || `${e2.message} [tid=${tid} station=${station}]`; }
     }
-    await conn.commit(); conn.release();
-    res.json({success:true, inserted, skipped});
+
+    await conn.commit();
+    conn.release();
+    res.json({success:true, inserted, skipped, firstError});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
@@ -1321,6 +1645,12 @@ app.get('/api/legacy/leaves', async (req, res) => {
   await addCol("ALTER TABLE debit_data ADD COLUMN ic_name VARCHAR(100) DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN cash_recovery_type VARCHAR(50) DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN cm_confirm VARCHAR(10) DEFAULT NULL");
+  await addCol("ALTER TABLE debit_data ADD COLUMN cluster VARCHAR(20) DEFAULT NULL");
+  await addCol("ALTER TABLE debit_data ADD COLUMN sub_type VARCHAR(50) DEFAULT NULL");
+  await addCol("ALTER TABLE debit_data ADD COLUMN remarks TEXT DEFAULT NULL");
+  await addCol("ALTER TABLE debit_data ADD COLUMN confirm_by VARCHAR(100) DEFAULT NULL");
+  await addCol("ALTER TABLE debit_responses ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
+  await addCol("ALTER TABLE log_advances ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
   console.log('Migrations done.');
 })().catch(e => console.error('Migration error:', e.message));
 

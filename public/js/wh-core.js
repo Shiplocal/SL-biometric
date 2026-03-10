@@ -3,7 +3,7 @@ let session={station:'',machineId:'',periodLabel:''};
 let stationData={locks:{},ics:[],groups:[],bioMap:{},debit:[]};
 let kmsStore={pending:[],done:[]};
 let attStore={pending:[],review:[]};
-let advStore={pending:[],review:[]};
+let advStore={request:[],submitted:[]};
 let debCurTab='final';
 let openShifts={};
 let allStaff=[];
@@ -126,10 +126,16 @@ function updateModuleBadges(){
   ['kms','att','adv','deb'].forEach(m=>{
     const badge=document.getElementById(`badge-${m}`);
     const locked=locks[m.toUpperCase()];
-    badge.style.display=locked?'block':'none';
-    badge.textContent=locked?'SUBMITTED':'OPEN';
-    badge.className=`mc-badge ${locked?'badge-submitted':'badge-open'}`;
-    document.getElementById(`mc-${m}`).classList.toggle('locked',locked);
+    // ADV and DEB are open-list modules — never show SUBMITTED badge, never lock the card
+    if(m==='adv'||m==='deb'){
+      badge.style.display='none';
+      document.getElementById(`mc-${m}`).classList.remove('locked');
+    } else {
+      badge.style.display=locked?'block':'none';
+      badge.textContent=locked?'SUBMITTED':'OPEN';
+      badge.className=`mc-badge ${locked?'badge-submitted':'badge-open'}`;
+      document.getElementById(`mc-${m}`).classList.toggle('locked',locked);
+    }
   });
 }
 
@@ -156,8 +162,15 @@ function initAttStore(){
 }
 
 function initAdvStore(){
-  advStore.pending=stationData.ics.map(ic=>({icId:ic.ic_id,icName:ic.ic_name,amount:'',reason:''}));
-  advStore.review=[];
+  const submittedIds = new Set((stationData.advLog||[]).map(a => String(a.ic_id)));
+  advStore.submitted = (stationData.advLog||[]).map(a => ({
+    icId: String(a.ic_id), icName: a.ic_name,
+    amount: a.amount, reason: a.reason||'',
+    verifiedBy: a.verified_by||'', submittedAt: a.submitted_at
+  }));
+  advStore.request = stationData.ics
+    .filter(ic => !submittedIds.has(String(ic.ic_id)))
+    .map(ic => ({icId: ic.ic_id, icName: ic.ic_name, amount:'', reason:''}));
 }
 
 // -- NAVIGATION --------------------------------------------
@@ -171,22 +184,20 @@ function navTo(mod){
       showKmsSummaryFlat(stationData.kmsLog||[],stationData.groups||[]);return;
     }
     if(mod==='ATT'){
-      // map server field names to what showAttSummary expects: {name, days}
       const attData=(stationData.attLog||[]).map(r=>({name:r.ic_name||r.name||'',days:r.days_submitted||r.days||0}));
       showAttSummary(attData);return;
     }
-    if(mod==='ADV'){
-      // map server field names to what showAdvSummary expects: {name, amount, reason}
-      const advData=(stationData.advLog||[]).map(r=>({name:r.ic_name||r.name||'',amount:r.amount||0,reason:r.reason||'-'}));
-      showAdvSummary(advData);return;
-    }
-    return;
+    // ADV and DEB: open-list modules — fall through to normal open handler
+    if(mod!=='ADV'&&mod!=='DEB') return;
   }
-  if(mod==='DEB'&&locked){toast('Debit already submitted.','info');return;}
   if(mod==='KMS'){showModule('kms');kmsTab('pending');return;}
   if(mod==='ATT'){showModule('att');attTab('pending');return;}
-  if(mod==='ADV'){showModule('adv');advTab('pending');return;}
-  if(mod==='DEB'){showModule('deb');debTab('final');return;}
+  if(mod==='ADV'){showModule('adv');advTab('request');return;}
+  if(mod==='DEB'){
+    showModule('deb');
+    debTab('final');
+    return;
+  }
 }
 
 function goHome(){

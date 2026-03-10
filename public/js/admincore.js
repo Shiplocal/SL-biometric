@@ -49,7 +49,7 @@ async function populateFilters() {
     const periods=await fetch('/api/admin/periods').then(r=>r.json());
     const active=periods.find(p=>p.is_active);
     const defaultPL = active ? active.period_label : null;
-    ['ov-period','deb-period'].forEach(sid=>{
+    ['ov-period'].forEach(sid=>{
       const s=document.getElementById(sid); if(!s)return; s.innerHTML='';
       periods.forEach(p=>s.innerHTML+=`<option value="${p.period_label}" ${p.period_label===defaultPL?'selected':''}>${p.period_label}${p.is_active?' ★':''}</option>`);
     });
@@ -77,7 +77,7 @@ function onGlobalStationChange(){
   const id=activeTab.id;
   if(id==='t-kms'){loadEdspCycles();}
   else if(id==='t-adv')loadAdv();
-  else if(id==='t-deb'){loadDeb();loadDebAdmin();populateDebStations();}
+  else if(id==='t-deb'){debSubTab('resp');populateDebStations();}
   else if(id==='t-ov')renderOvView();
   else if(id==='t-users'){loadUsers();loadEnroll();}
   else if(id==='t-viol')loadViol();
@@ -91,7 +91,7 @@ function sw(id){
   // Auto-load tab content
   if(id==='t-kms'){loadEdspCycles();}
   else if(id==='t-adv')loadAdv();
-  else if(id==='t-deb'){loadDeb();loadDebAdmin();populateDebStations();}
+  else if(id==='t-deb'){debSubTab('resp');populateDebStations();}
   else if(id==='t-ov')renderOvView();
   else if(id==='t-users'){loadUsers();loadEnroll();}
   else if(id==='t-viol')loadViol();
@@ -107,7 +107,7 @@ function refreshAll(){
   const id = activeTab.id;
   if(id==='t-kms'){loadEdspCycles();}
   else if(id==='t-adv')loadAdv();
-  else if(id==='t-deb'){loadDeb();loadDebAdmin();populateDebStations();}
+  else if(id==='t-deb'){debSubTab('resp');populateDebStations();}
   else if(id==='t-ov')renderOvView();
   else if(id==='t-users'){loadUsers();loadEnroll();}
   else if(id==='t-viol')loadViol();
@@ -245,31 +245,41 @@ const debSelectedIds = new Set();
 
 function onDebAdmFileSelected(inp) {
   debAdmFile = inp.files[0] || null;
-  document.getElementById('deb-adm-file-lbl').textContent = debAdmFile ? debAdmFile.name : '📤 Upload Excel';
-  document.getElementById('btn-deb-adm-upload').disabled = !debAdmFile;
+  document.getElementById('deb-adm-file-lbl').textContent = debAdmFile ? debAdmFile.name : 'Upload Excel';
+  const btn = document.getElementById('btn-deb-adm-upload');
+  btn.disabled = !debAdmFile;
+  btn.style.opacity = debAdmFile ? '1' : '.45';
+  btn.style.cursor  = debAdmFile ? 'pointer' : 'not-allowed';
 }
 
 async function uploadDebEntries() {
   if (!debAdmFile) return;
   const statusEl = document.getElementById('deb-adm-status');
-  statusEl.textContent = 'Uploading…';
-  const fd = new FormData(); fd.append('file', debAdmFile); fd.append('dest', 'debit_upload');
-  const upRes = await fetch('/api/admin/upload-file', {method:'POST', body:fd});
-  if (!upRes.ok) { statusEl.textContent = 'Upload failed.'; return; }
-  const {filePath} = await upRes.json();
-  statusEl.textContent = 'Importing entries…';
-  const res = await fetch('/api/admin/debit-upload', {
-    method:'POST', headers:{'Content-Type':'application/json','x-cron-secret':'sl-midnight-2026'},
-    body: JSON.stringify({filePath})
-  });
-  const d = await res.json();
-  if (d.success) {
-    statusEl.innerHTML = `<span style="color:var(--green-d)">✓ ${d.inserted} entries imported as draft${d.skipped ? ` (${d.skipped} skipped)` : ''}.</span>`;
-    debAdmFile = null;
-    document.getElementById('deb-adm-file-lbl').textContent = '📤 Upload Excel';
-    document.getElementById('btn-deb-adm-upload').disabled = true;
-    loadDebAdmin();
-  } else statusEl.textContent = 'Error: ' + d.error;
+  statusEl.textContent = 'Importing…';
+  const fd = new FormData();
+  fd.append('file', debAdmFile);
+  try {
+    const res = await fetch('/api/admin/debit-upload', {method:'POST', body:fd});
+    const text = await res.text();
+    let d;
+    try { d = JSON.parse(text); }
+    catch(e) { statusEl.textContent = 'Server error (non-JSON response). Check server logs.'; console.error('Server returned:', text.substring(0,300)); return; }
+    if (d.success) {
+      const errNote = d.firstError ? ` — first error: ${d.firstError}` : '';
+      statusEl.innerHTML = `<span style="color:${d.inserted?'var(--green-d)':'var(--red-d)'}">✓ ${d.inserted} imported, ${d.skipped} skipped${errNote}</span>`;
+      debAdmFile = null;
+      document.getElementById('deb-adm-file-lbl').textContent = 'Upload Excel';
+      const btn = document.getElementById('btn-deb-adm-upload');
+      btn.disabled = true;
+      btn.style.opacity = '.45';
+      btn.style.cursor = 'not-allowed';
+      loadDebAdmin();
+    } else {
+      statusEl.textContent = 'Error: ' + d.error;
+    }
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
 }
 
 const STATUS_PILL = {

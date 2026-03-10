@@ -116,6 +116,9 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
 /* action bar */
 .action-bar{display:flex;gap:10px;margin-top:6px}
 .action-bar .btn{flex:1}
+.deb-month-block{border:1.5px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--card)}
+.deb-month-hd{display:flex;align-items:center;padding:12px 16px;cursor:pointer;background:var(--card);border-bottom:1px solid var(--border);user-select:none}
+.deb-month-hd:hover{background:var(--bg)}
 /* search */
 .search-row{display:flex;gap:10px;margin-bottom:14px;align-items:center}
 .sw{position:relative;flex:1}
@@ -267,7 +270,7 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
       </div>
       <div class="module-card" id="mc-deb" onclick="navTo('DEB')">
         <div class="mc-emoji">💸</div>
-        <div class="mc-title">Debit Flow</div>
+        <div class="mc-title">Debit Note</div>
         <div class="mc-sub">Loss & recovery responses</div>
         <span class="mc-badge" id="badge-deb" style="display:none"></span>
       </div>
@@ -317,12 +320,6 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
       </div>
       <button class="btn btn-ghost btn-sm" onclick="kmsSelectVisible()">☑ Select Visible</button>
     </div>
-    <!-- Submitted (read-only) search -->
-    <div id="kms-controls-submitted" class="search-row" style="display:none">
-      <div class="sw" style="flex:1"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <input type="text" id="kms-submitted-search" placeholder="Search AMX ID or IC name…" oninput="debouncedFilterKms(this.value)">
-      </div>
-    </div>
     <div class="tbl-wrap" style="max-height:58vh;overflow-y:auto;overflow-x:auto">
       <table class="kms-tbl"><colgroup id="kms-cols"></colgroup><thead id="kms-head"></thead><tbody id="kms-body"></tbody></table>
     </div>
@@ -358,11 +355,11 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
       <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
     </div>
     <div class="wf-tabs">
-      <button class="wf-tab active" id="adv-t-p" onclick="advTab('pending')">Pending <span class="tc" id="adv-cnt-p">0</span></button>
-      <button class="wf-tab" id="adv-t-d" onclick="advTab('review')">Review <span class="tc" id="adv-cnt-d">0</span></button>
+      <button class="wf-tab active" id="adv-t-req" onclick="advTab('request')">Request <span class="tc" id="adv-cnt-req"></span></button>
+      <button class="wf-tab" id="adv-t-sub" onclick="advTab('submitted')">Submitted <span class="tc" id="adv-cnt-sub"></span></button>
     </div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>IC Name</th><th>ID</th><th>Amount (₹)</th><th>Reason</th></tr></thead>
+      <thead id="adv-head"><tr><th>IC Name</th><th>ID</th><th>Amount (₹)</th><th>Reason</th></tr></thead>
       <tbody id="adv-body"></tbody>
     </table></div>
     <div class="action-bar" id="adv-actions"></div>
@@ -370,21 +367,43 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
 </div>
 
 <!-- -- DEB MODULE ----------------------------------- -->
-<div id="m-deb" class="module-view">
-  <div class="dash">
+<div id="m-deb" class="module-view" style="max-width:100%">
+  <div class="dash" style="max-width:100%">
     <div class="module-hd">
-      <div class="mod-title">💸 Debit Flow</div>
+      <div class="mod-title">💸 Debit Note</div>
       <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
     </div>
     <div class="wf-tabs">
-      <button class="wf-tab active" id="deb-t-f" onclick="debTab('final')">Final Loss</button>
-      <button class="wf-tab" id="deb-t-r" onclick="debTab('recovery')">Recovery / Other</button>
+      <button class="wf-tab active" id="deb-t-final" onclick="debTab('final')">Final Loss</button>
+      <button class="wf-tab" id="deb-t-new" onclick="debTab('new')">🆕 New</button>
+      <button class="wf-tab" id="deb-t-recovery" onclick="debTab('recovery')">Recovery</button>
+      <button class="wf-tab" id="deb-t-caseopen" onclick="debTab('caseopen')">Case Open</button>
+      <button class="wf-tab" id="deb-t-history" onclick="debTab('history')">📋 History</button>
     </div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>TID</th><th>Amount</th><th>Confirm By</th><th>Decision / Details</th><th>Remarks</th></tr></thead>
-      <tbody id="deb-body"></tbody>
-    </table></div>
-    <button class="btn btn-primary" onclick="submitDeb()" id="deb-submit-btn" style="margin-top:14px">FINAL SUBMIT DEBIT RESPONSES</button>
+    <!-- Active debit items (pending response) -->
+    <div id="deb-active-section">
+      <div class="tbl-wrap" style="max-height:58vh;overflow-y:auto;overflow-x:auto">
+        <table class="kms-tbl">
+          <thead id="deb-thead">
+            <tr>
+              <th>TID / Date</th>
+              <th>Bucket / Sub</th>
+              <th style="text-align:right">Amount</th>
+              <th>Accept Loss?</th>
+              <th>Remarks</th>
+            </tr>
+          </thead>
+          <tbody id="deb-body"></tbody>
+        </table>
+      </div>
+      <div class="action-bar" style="margin-top:6px">
+        <button class="btn btn-primary" onclick="debCurTab==='new'?submitDebCategorise():debSubmitWithVerification()" id="deb-submit-btn">FINAL SUBMIT DEBIT RESPONSES</button>
+      </div>
+    </div>
+    <!-- History section (answered, last 6 months) -->
+    <div id="deb-history-section" style="display:none">
+      <div id="deb-history-body"></div>
+    </div>
   </div>
 </div>
 

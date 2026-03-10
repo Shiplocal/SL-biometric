@@ -22,21 +22,35 @@ function renderStaff(){
   if(!f.length){cont.innerHTML='<div style="padding:28px;text-align:center;color:var(--text-3)">No employees found</div>';return;}
   cont.innerHTML=f.map(e=>{
     const init=e.ic_name.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
-    const enrolled=e.has_face==1;
+    const enrolled=e.has_face==1;                   // true only when enroll_status=APPROVED
+    const pending=e.enroll_status==='PENDING';       // face scanned, awaiting admin approval
     const shiftData=openShifts[e.ic_id];
     const clockedIn=shiftData&&shiftData.status==='CLOCKED_IN';
-    let btnClass,btnLabel;
-    if(!enrolled){btnClass='scan-enroll';btnLabel='ENROLL';}
-    else if(clockedIn){btnClass='scan-out';btnLabel='CLOCK OUT';}
-    else{btnClass='scan-in';btnLabel='CLOCK IN';}
+    let btnClass,btnLabel,btnDisabled='';
+    if(pending){
+      btnClass='scan-enroll';btnLabel='PENDING APPROVAL';btnDisabled=' disabled';
+    } else if(!enrolled){
+      btnClass='scan-enroll';btnLabel='ENROLL';
+    } else if(clockedIn){
+      btnClass='scan-out';btnLabel='CLOCK OUT';
+    } else {
+      btnClass='scan-in';btnLabel='CLOCK IN';
+    }
     const badge=clockedIn?`<span class="shift-badge in">IN ${fmtDur(shiftData.durationMins)}</span>`:'';
+    const statusLine=pending
+      ?`· <span style="color:var(--amber-d)">&#x23F3; Awaiting admin approval</span>`
+      :enrolled
+        ?`· <span style="color:var(--green-d)">Face enrolled</span>`
+        :`· <span style="color:var(--text-3)">Not enrolled</span>`;
+    const safeName=e.ic_name.replace(/'/g,"\\'");
+    const onclk=pending?'':`onclick="openFace('${e.ic_id}','${safeName}',${enrolled},${clockedIn})"`;
     return `<div class="emp-row">
       <div class="emp-avatar">${init}</div>
       <div class="emp-info">
         <div class="emp-name">${e.ic_name}${badge}</div>
-        <div class="emp-meta">ID · ${e.ic_id} ${enrolled?'· <span style="color:var(--green-d)">Face enrolled</span>':'· <span style="color:var(--amber-d)">Not enrolled</span>'}</div>
+        <div class="emp-meta">ID · ${e.ic_id} ${statusLine}</div>
       </div>
-      <button class="scan-btn ${btnClass}" onclick="openFace('${e.ic_id}','${e.ic_name.replace(/'/g,"\\'")}',${enrolled},${clockedIn})">${btnLabel}</button>
+      <button class="scan-btn ${btnClass}"${btnDisabled} ${onclk}>${btnLabel}</button>
     </div>`;
   }).join('');
 }

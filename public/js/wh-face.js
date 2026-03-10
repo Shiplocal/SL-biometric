@@ -54,13 +54,32 @@ async function doFaceAction(){
   const det=await faceapi.detectSingleFace(vid).withFaceLandmarks().withFaceDescriptor();
   if(!det){setFaceStatus('error','No face detected — centre your face');btn.disabled=false;return;}
   const desc=Array.from(det.descriptor).join(',');
+
   if(face.action==='ENROLL'){
-    // Capture photo BEFORE sending (video still live at this point)
     const photo=capturePhoto();
     const r=await fetch('/api/enroll-face',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icId:face.icId,descriptor:desc,station:session.station,machineId:session.machineId,photo:photo})});
     if(r.ok){setFaceStatus('success','Face enrolled!');toast(`${face.icName} — enrolled ✓`,'success');setTimeout(()=>{closeFace();loadBioStaff();},1500);}
     else{setFaceStatus('error','Enrolment failed');btn.disabled=false;}
+
+  } else if(face.action==='VERIFY_SUBMIT'){
+    // Generic face-gate for any submit — fires window._faceVerifyCallback(icName)
+    const fr=await fetch(`/api/face/${face.icId}`);
+    const fd=await fr.json();
+    if(!fd.found){setFaceStatus('error','No enrolled face — enrol first');btn.disabled=false;return;}
+    const dist=faceapi.euclideanDistance(det.descriptor,new Float32Array(fd.descriptor.split(',').map(Number)));
+    if(dist>=0.55){setFaceStatus('error','Face not matched — try again');btn.disabled=false;return;}
+    setFaceStatus('success',`${face.icName} verified ✓`);
+    const verifiedName=face.icName;
+    setTimeout(()=>{
+      closeFace();
+      if(typeof window._faceVerifyCallback==='function'){
+        window._faceVerifyCallback(verifiedName);
+        window._faceVerifyCallback=null;
+      }
+    },1000);
+
   } else {
+    // CLOCK_IN / CLOCK_OUT
     const fr=await fetch(`/api/face/${face.icId}`);
     const fd=await fr.json();
     if(!fd.found){setFaceStatus('error','No enrolled face — enrol first');btn.disabled=false;return;}
