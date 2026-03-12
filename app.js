@@ -26,17 +26,19 @@ const csv = { parse: (str, opts) => _syncParse(str, opts) };
 
 const app    = express();
 const upload = multer({ storage: multer.memoryStorage() });
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 const pool = mysql.createPool({
   host: 'localhost', user: 'bifmein1_dbuser',
-  password: '_VF&dOshcD_%J*gf', database: 'bifmein1_aiauto-biometric'
+  password: '_VF&dOshcD_%J*gf', database: 'bifmein1_aiauto-biometric',
+  dateStrings: true
 });
 
 // Legacy DB - read-only, used for stations, staff, login
 const legacyPool = mysql.createPool({
   host: 'localhost', user: 'bifmein1_aws2019',
-  password: 'eA]n(gsN=[_2', database: 'bifmein1_nship24'
+  password: 'eA]n(gsN=[_2', database: 'bifmein1_nship24',
+  dateStrings: true
 });
 
 // SQL helper: timestamp column name (backtick-safe in template literals)
@@ -130,11 +132,10 @@ async function closeShift(icId, icName, station, machineId, clockInRow, punchTyp
 
 app.get('/api/stations', async (req, res) => {
   try {
-    const [r] = await legacyPool.execute(
-      `SELECT REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'') AS station_code,
-              TRIM(IFNULL(store_id,'')) AS store_name
-       FROM stores WHERE is_delete=0 AND status=0
-         AND REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'')!=''
+    const [r] = await pool.execute(
+      `SELECT station_code, store_name, address, store_email, store_cat,
+              esic, latitude, longitude, state, status
+       FROM stations WHERE is_delete=0 AND status=0 AND station_code!=''
        ORDER BY station_code`
     );
     res.json(r);
@@ -144,12 +145,9 @@ app.get('/api/stations', async (req, res) => {
 app.post('/api/manager-login', async (req, res) => {
   const {station, password} = req.body;
   try {
-    const [r] = await legacyPool.execute(
-      `SELECT REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'') AS station_code
-       FROM stores
-       WHERE REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'')=?
-         AND is_delete=0 AND status=0`,
-      [station]
+    const [r] = await pool.execute(
+      `SELECT station_code FROM stations WHERE station_code=? AND is_delete=0 AND status=0`,
+      [station.trim()]
     );
     if (r.length) res.json({success:true, stationCode: r[0].station_code});
     else res.status(401).json({success:false, error:'Station not found'});
@@ -239,16 +237,9 @@ app.post('/api/machine-delete', async (req, res) => {
 app.get('/api/staff/:station', async (req, res) => {
   try {
     const station = req.params.station;
-    const SC = "REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')";
-    const [ics] = await legacyPool.execute(
-      `SELECT u.id AS ic_id,
-              TRIM(CONCAT(u.fname,' ',COALESCE(NULLIF(u.mname,''),''),' ',u.lname)) AS ic_name,
-              ${SC} AS station_code
-       FROM users u LEFT JOIN stores s ON s.id=u.store_id
-       WHERE u.is_delete=0 AND u.status=0
-         AND u.designation IN ('Delivery Associate','Station Associate','Station Incharge','Station Incahrge','Van Associate')
-         AND ${SC}=?
-       ORDER BY ic_name`, [station]
+    const [ics] = await pool.execute(
+      `SELECT ic_id, ic_name, station_code FROM config_whic
+       WHERE is_active=1 AND station_code=? ORDER BY ic_name`, [station]
     );
     // Merge with biometric status from main DB (parallel queries)
     const icIds = ics.map(ic => String(ic.ic_id));
@@ -275,17 +266,11 @@ app.get('/api/staff/:station', async (req, res) => {
 
 app.get('/api/users', async (req, res) => {
   try {
-    const SC = "REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')";
     // Fetch all three datasets in parallel instead of sequential giant IN clauses
     const [[ics], [bioRows], [accRows]] = await Promise.all([
-      legacyPool.execute(
-        `SELECT u.id AS ic_id,
-                TRIM(CONCAT(u.fname,' ',COALESCE(NULLIF(u.mname,''),''),' ',u.lname)) AS ic_name,
-                ${SC} AS station_code, u.status
-         FROM users u LEFT JOIN stores s ON s.id=u.store_id
-         WHERE u.is_delete=0
-           AND u.designation IN ('Delivery Associate','Station Associate','Station Incharge','Station Incahrge','Van Associate')
-         ORDER BY station_code, ic_name`
+      pool.execute(
+        `SELECT ic_id, ic_name, station_code, is_active AS status
+         FROM config_whic ORDER BY station_code, ic_name`
       ),
       pool.execute('SELECT ic_id, enroll_status, enroll_photo FROM biometric_vault').catch(()=>[[]]),
       pool.execute('SELECT ic_id, can_access_modules FROM config_whic').catch(()=>[[]])
@@ -296,7 +281,7 @@ app.get('/api/users', async (req, res) => {
     res.json(ics.map(ic => ({
       ic_id: String(ic.ic_id), ic_name: (ic.ic_name||'').trim(),
       station_code: (ic.station_code||'').trim(),
-      is_active: ic.status === 0 ? 1 : 0,
+      is_active: ic.status ? 1 : 0,
       has_face: bioMap[String(ic.ic_id)] ? 1 : 0,
       enroll_status: bioMap[String(ic.ic_id)] || 'NONE',
       enroll_photo: bioPhotoMap[String(ic.ic_id)] || null,
@@ -314,10 +299,11 @@ app.post('/api/enroll-face', async (req, res) => {
     if (wicRow.length && wicRow[0].ic_name) {
       icName = wicRow[0].ic_name;
     } else {
-      const [legIc] = await legacyPool.execute(
-        "SELECT TRIM(CONCAT(fname,' ',COALESCE(NULLIF(mname,''),''),' ',lname)) AS ic_name FROM users WHERE id=?", [icId]
+      // Fallback: look up from staff table
+      const [stRow] = await pool.execute(
+        `SELECT TRIM(CONCAT(fname,' ',COALESCE(NULLIF(mname,''),''),' ',lname)) AS ic_name FROM staff WHERE id=?`, [icId]
       ).catch(()=>[[]]);
-      if (legIc.length) icName = legIc[0].ic_name.trim();
+      if (stRow.length) icName = stRow[0].ic_name.trim();
     }
     // Ensure IC exists in config_whic (FK requirement)
     await pool.execute(
@@ -695,6 +681,133 @@ app.post('/api/admin/upload-edsp', upload.single('file'), async (req, res) => {
   } catch(e) { console.error(e); res.status(500).json({error:'Upload failed: '+e.message}); }
 });
 
+// ── Historical EDSP/KMS upload (Payroll tab) ─────────────────────────────────
+app.post('/api/admin/upload-historical-edsp', async (req, res) => {
+  const { rows: parsed, preview } = req.body || {};
+  if (!parsed || !parsed.length) return res.status(400).json({error:'No data received'});
+
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const minDate = parsed.reduce((m,r) => r.dDate < m ? r.dDate : m, parsed[0].dDate);
+  const maxDate = parsed.reduce((m,r) => r.dDate > m ? r.dDate : m, parsed[0].dDate);
+  // Parse date parts directly to avoid UTC timezone shifting
+  const [py, pm] = minDate.split('-').map(Number);
+  const period_label = months[pm - 1] + '-' + py;
+
+  // Preview mode — just return stats
+  if (preview) {
+    const stations = [...new Set(parsed.map(r=>r.station_code))].sort();
+    const ics = new Set(parsed.map(r=>r.amx_id)).size;
+    return res.json({ok:true, preview:true, rows:parsed.length, period_label,
+                     date_from:minDate, date_to:maxDate, stations, ic_count:ics});
+  }
+
+  // Insert mode — bulk insert in chunks of 500
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
+  let inserted = 0, skipped = 0;
+
+  try {
+    // Upsert edsp_cycles record for this period
+    const [existCyc] = await conn.execute(
+      'SELECT id FROM edsp_cycles WHERE cycle_label=? LIMIT 1', [period_label]
+    );
+    let cycleId;
+    if (existCyc.length) {
+      cycleId = existCyc[0].id;
+    } else {
+      const [ins] = await conn.execute(
+        'INSERT INTO edsp_cycles (cycle_label, date_from, date_to, is_active) VALUES (?,?,?,0)',
+        [period_label, minDate, maxDate]
+      );
+      cycleId = ins.insertId;
+    }
+
+    const CHUNK = 500;
+    for (let i = 0; i < parsed.length; i += CHUNK) {
+      const chunk = parsed.slice(i, i + CHUNK);
+
+      // Bulk insert log_amx
+      const amxVals = chunk.map(r =>
+        [r.station_code, r.amx_id, r.ic_id||null, r.ic_name, r.dDate, period_label,
+         0, r.parcel_type, r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.returns||0]
+      );
+      const amxPlaceholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+      await conn.execute(
+        `INSERT INTO log_amx
+           (station_code,amx_id,ic_id,ic_name,delivery_date,period_label,
+            kms,parcel_type,delivered,pickup,swa,smd,mfn,returns)
+         VALUES ${amxPlaceholders}
+         ON DUPLICATE KEY UPDATE
+           ic_name=VALUES(ic_name), ic_id=VALUES(ic_id),
+           delivered=VALUES(delivered), pickup=VALUES(pickup),
+           swa=VALUES(swa), smd=VALUES(smd), mfn=VALUES(mfn), returns=VALUES(returns)`,
+        amxVals.flat()
+      );
+
+      // Bulk insert edsp_data
+      const edspVals = chunk.map(r =>
+        [cycleId, r.station_code, r.amx_id, r.dDate, r.parcel_type,
+         r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.returns||0]
+      );
+      const edspPlaceholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',');
+      await conn.execute(
+        `INSERT INTO edsp_data
+           (cycle_id,station_code,amx_id,delivery_date,parcel_type,
+            delivered,pickup,swa,smd,mfn,returns)
+         VALUES ${edspPlaceholders}
+         ON DUPLICATE KEY UPDATE
+           delivered=VALUES(delivered), pickup=VALUES(pickup),
+           swa=VALUES(swa), smd=VALUES(smd), mfn=VALUES(mfn), returns=VALUES(returns)`,
+        edspVals.flat()
+      );
+
+      inserted += chunk.length;
+    }
+
+    await conn.commit();
+    conn.release();
+    res.json({ok:true, inserted, skipped, period_label, cycleId});
+  } catch(e) {
+    await conn.rollback();
+    conn.release();
+    res.status(500).json({error:e.message});
+  }
+});
+
+// ── List historical EDSP periods ─────────────────────────────────────────────
+app.get('/api/admin/historical-edsp-periods', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT period_label,
+             COUNT(*) AS rows,
+             COUNT(DISTINCT station_code) AS stations,
+             MIN(delivery_date) AS date_from,
+             MAX(delivery_date) AS date_to
+      FROM log_amx
+      WHERE period_label REGEXP '^[a-z]+-[0-9]{4}$'
+      GROUP BY period_label
+      ORDER BY MIN(delivery_date) DESC`);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Clear historical EDSP data by period_label ────────────────────────────────
+app.delete('/api/admin/historical-edsp/:period', async (req, res) => {
+  const period = req.params.period;
+  if (!period) return res.status(400).json({error:'period required'});
+  try {
+    const [la] = await pool.execute('DELETE FROM log_amx WHERE period_label=?', [period]);
+    const [cyc] = await pool.execute('SELECT id FROM edsp_cycles WHERE cycle_label=?', [period]);
+    let edspDel = 0;
+    if (cyc.length) {
+      const [ed] = await pool.execute('DELETE FROM edsp_data WHERE cycle_id=?', [cyc[0].id]);
+      edspDel = ed.affectedRows;
+      await pool.execute('DELETE FROM edsp_cycles WHERE cycle_label=?', [period]);
+    }
+    res.json({ok:true, log_amx_deleted: la.affectedRows, edsp_data_deleted: edspDel});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 // Upload Debit data via CSV
 app.post('/api/admin/upload-debit', upload.single('file'), async (req, res) => {
   try {
@@ -821,11 +934,8 @@ app.get('/api/admin/submission-status', async (req, res) => {
     // Primary: get stations from legacy stores table
     let stationCodes = [];
     try {
-      const [rows] = await legacyPool.execute(
-        `SELECT REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'') AS station_code
-         FROM stores WHERE is_delete=0 AND status=0
-           AND REPLACE(REPLACE(station_code,CHAR(13),''),CHAR(10),'')!=''
-         ORDER BY station_code`
+      const [rows] = await pool.execute(
+        `SELECT station_code FROM stations WHERE is_delete=0 AND status=0 AND station_code!='' ORDER BY station_code`
       );
       stationCodes = rows.map(r => r.station_code).filter(Boolean);
     } catch(e) {}
@@ -895,12 +1005,8 @@ app.get('/api/admin/attendance-overview', async (req, res) => {
     // All staff grouped by station from legacy DB
     const SC = "REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')";
     const [[staffRows], [clockIns], [openShifts]] = await Promise.all([
-      legacyPool.execute(
-        `SELECT u.id AS ic_id, TRIM(CONCAT(u.fname,' ',COALESCE(NULLIF(u.mname,''),''),' ',u.lname)) AS ic_name,
-                ${SC} AS station_code
-         FROM users u LEFT JOIN stores s ON s.id=u.store_id
-         WHERE u.is_delete=0 AND u.status=0
-           AND u.designation IN ('Delivery Associate','Station Associate','Station Incharge','Station Incahrge','Van Associate')`
+      pool.execute(
+        `SELECT ic_id, ic_name, station_code FROM config_whic WHERE is_active=1`
       ),
       // Who punched in on this date
       pool.execute(
@@ -1551,32 +1657,137 @@ app.get('/api/admin/kms-summary', async (req, res) => {
 // -- LEGACY DATA BROWSER (read-only) ----------------------
 app.get('/api/legacy/test', async (req, res) => {
   try {
-    const [[s]] = await legacyPool.execute('SELECT COUNT(*) AS c FROM stores WHERE is_delete=0');
-    const [[i]] = await legacyPool.execute('SELECT COUNT(*) AS c FROM config_whic WHERE is_active=1').catch(()=>[[{c:0}]]);
-    const [[u]] = await legacyPool.execute('SELECT COUNT(*) AS c FROM users WHERE status=0').catch(()=>[[{c:0}]]);
+    const [[s]] = await pool.execute('SELECT COUNT(*) AS c FROM stations WHERE is_delete=0').catch(()=>[[{c:0}]]);
+    const [[i]] = await pool.execute('SELECT COUNT(*) AS c FROM config_whic WHERE is_active=1').catch(()=>[[{c:0}]]);
+    const [[u]] = await pool.execute('SELECT COUNT(*) AS c FROM staff WHERE status=0').catch(()=>[[{c:0}]]);
     res.json({connected:true, stores:s.c, ics:i.c, users:u.c});
   } catch(e) { res.json({connected:false, error:e.message}); }
 });
+
+// ── LEGACY SYNC — copy all legacy tables into current DB with L prefix ──
+app.post('/api/legacy/sync-tables', async (req, res) => {
+  try {
+    // Get all tables from legacy DB
+    const [tables] = await legacyPool.execute('SHOW TABLES');
+    const dbKey = Object.keys(tables[0])[0]; // e.g. "Tables_in_bifmein1_nship24"
+    const tableNames = tables.map(t => t[dbKey]);
+
+    const conn = await pool.getConnection();
+    const results = [];
+
+    for (const tbl of tableNames) {
+      const dest = `L${tbl}`;
+      try {
+        // Get CREATE TABLE from legacy
+        const [[ct]] = await legacyPool.execute(`SHOW CREATE TABLE \`${tbl}\``);
+        let createSql = ct['Create Table'];
+
+        // Rename table reference to L-prefixed destination
+        createSql = createSql.replace(
+          new RegExp(`CREATE TABLE \`${tbl}\``, 'i'),
+          `CREATE TABLE IF NOT EXISTS \`${dest}\``
+        );
+        // Remove ENGINE/CHARSET clauses that may conflict, keep structure
+        await conn.execute(createSql).catch(async () => {
+          // If CREATE failed (e.g. already exists with different structure), drop and recreate
+          await conn.execute(`DROP TABLE IF EXISTS \`${dest}\``);
+          await conn.execute(createSql);
+        });
+
+        // Clear and re-insert all rows
+        await conn.execute(`TRUNCATE TABLE \`${dest}\``);
+        const [rows] = await legacyPool.execute(`SELECT * FROM \`${tbl}\``);
+        if (rows.length) {
+          const cols = Object.keys(rows[0]).map(c=>`\`${c}\``).join(',');
+          const ph   = Object.keys(rows[0]).map(()=>'?').join(',');
+          for (const row of rows) {
+            await conn.execute(
+              `INSERT INTO \`${dest}\` (${cols}) VALUES (${ph})`,
+              Object.values(row)
+            ).catch(()=>{}); // skip individual row errors (e.g. FK issues)
+          }
+        }
+        results.push({table: dest, rows: rows.length, status:'ok'});
+      } catch(e) {
+        results.push({table: dest, rows:0, status:'error', error: e.message});
+      }
+    }
+    conn.release();
+    res.json({success:true, synced: results.filter(r=>r.status==='ok').length, total: tableNames.length, results});
+  } catch(e) { res.status(500).json({error: e.message}); }
+});
+
+// ── LEGACY ALL-TABLES — list all L-prefixed tables with row counts ──
+app.get('/api/legacy/all-tables', async (req, res) => {
+  try {
+    const [tables] = await pool.execute(`SHOW TABLES LIKE 'L%'`);
+    const dbKey = Object.keys(tables[0] || {})[0];
+    if (!dbKey) return res.json([]);
+    const names = tables.map(t => t[dbKey]);
+    const result = [];
+    for (const tbl of names) {
+      const [[cnt]] = await pool.execute(`SELECT COUNT(*) AS c FROM \`${tbl}\``).catch(()=>[[{c:0}]]);
+      result.push({table: tbl, rows: cnt.c});
+    }
+    res.json(result);
+  } catch(e) { res.status(500).json({error: e.message}); }
+});
+
+// ── LEGACY TABLE BROWSE — paginated rows from any L-prefixed table ──
+app.get('/api/legacy/table/:name', async (req, res) => {
+  const name = req.params.name;
+  if (!name.startsWith('L')) return res.status(400).json({error:'Only L-prefixed tables allowed'});
+  const page   = Math.max(1, parseInt(req.query.page)||1);
+  const limit  = Math.min(200, parseInt(req.query.limit)||100);
+  const offset = (page-1)*limit;
+  const search = req.query.search ? `%${req.query.search}%` : null;
+  try {
+    // Get column names
+    const [cols] = await pool.execute(`SHOW COLUMNS FROM \`${name}\``);
+    const colNames = cols.map(c=>c.Field);
+    const [[{total}]] = await pool.execute(`SELECT COUNT(*) AS total FROM \`${name}\``);
+
+    let rows;
+    if (search) {
+      // Search across all text/varchar columns
+      const textCols = cols.filter(c=>/char|text|enum/i.test(c.Type)).map(c=>c.Field);
+      if (textCols.length) {
+        const where = textCols.map(c=>`\`${c}\` LIKE ?`).join(' OR ');
+        const params = textCols.map(()=>search);
+        [rows] = await pool.execute(
+          `SELECT * FROM \`${name}\` WHERE ${where} LIMIT ? OFFSET ?`,
+          [...params, limit, offset]
+        );
+      } else {
+        [rows] = await pool.execute(`SELECT * FROM \`${name}\` LIMIT ? OFFSET ?`, [limit, offset]);
+      }
+    } else {
+      [rows] = await pool.execute(`SELECT * FROM \`${name}\` LIMIT ? OFFSET ?`, [limit, offset]);
+    }
+    res.json({columns: colNames, rows, total, page, limit});
+  } catch(e) { res.status(500).json({error: e.message}); }
+});
+
 app.get('/api/legacy/stations', async (req, res) => {
-  try { const [r] = await legacyPool.execute('SELECT station_code,store_id AS store_name,state,status FROM stores WHERE is_delete=0 ORDER BY station_code LIMIT 500'); res.json(r); }
+  try { const [r] = await pool.execute('SELECT station_code, store_name, state, status, address, store_email, store_cat FROM stations WHERE is_delete=0 ORDER BY station_code LIMIT 500'); res.json(r); }
   catch(e) { res.status(500).json({error:e.message}); }
 });
 app.get('/api/legacy/ics', async (req, res) => {
   try {
     const q = req.query.q ? '%'+req.query.q+'%' : '%';
-    const [r] = await legacyPool.execute('SELECT ic_id,ic_name,station_code,enrollment_status,is_active FROM config_whic WHERE (ic_id LIKE ? OR ic_name LIKE ?) LIMIT 500', [q,q]);
+    const [r] = await pool.execute('SELECT ic_id,ic_name,station_code,enrollment_status,is_active FROM config_whic WHERE (ic_id LIKE ? OR ic_name LIKE ?) LIMIT 500', [q,q]);
     res.json(r);
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 app.get('/api/legacy/users', async (req, res) => {
   try {
     const q = req.query.q ? '%'+req.query.q+'%' : '%';
-    const [r] = await legacyPool.execute('SELECT id,CONCAT(fname," ",lname) AS name,mobile,email,status FROM users WHERE (fname LIKE ? OR lname LIKE ? OR mobile LIKE ?) LIMIT 500', [q,q,q]);
+    const [r] = await pool.execute('SELECT id,CONCAT(fname," ",lname) AS name,mobile,email,status FROM staff WHERE (fname LIKE ? OR lname LIKE ? OR mobile LIKE ?) LIMIT 500', [q,q,q]);
     res.json(r);
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 app.get('/api/legacy/managers', async (req, res) => {
-  try { const [r] = await legacyPool.execute('SELECT id,CONCAT(fname," ",lname) AS name,mobile,station_code FROM users WHERE user_type=2 AND status=0 LIMIT 200'); res.json(r); }
+  try { const [r] = await pool.execute('SELECT s.id, CONCAT(s.fname," ",s.lname) AS name, s.mobile, st.station_code FROM staff s LEFT JOIN stations st ON s.store_id=st.legacy_store_id WHERE s.user_type=2 AND s.status=0 LIMIT 200'); res.json(r); }
   catch(e) { res.status(500).json({error:e.message}); }
 });
 app.get('/api/legacy/debit-notes', async (req, res) => {
@@ -1651,20 +1862,375 @@ app.get('/api/legacy/leaves', async (req, res) => {
   await addCol("ALTER TABLE debit_data ADD COLUMN confirm_by VARCHAR(100) DEFAULT NULL");
   await addCol("ALTER TABLE debit_responses ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
   await addCol("ALTER TABLE log_advances ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
+
+  // ── stations table ──────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS stations (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    station_code    VARCHAR(20) NOT NULL UNIQUE,
+    store_name      VARCHAR(100) DEFAULT NULL,
+    legacy_store_id INT DEFAULT NULL,
+    address         VARCHAR(300) DEFAULT NULL,
+    pincode         VARCHAR(20) DEFAULT NULL,
+    store_email     VARCHAR(100) DEFAULT NULL,
+    esic            TINYINT(1) DEFAULT 0,
+    store_cat       VARCHAR(50) DEFAULT NULL,
+    latitude        VARCHAR(100) DEFAULT NULL,
+    longitude       VARCHAR(100) DEFAULT NULL,
+    amazon_id       VARCHAR(150) DEFAULT NULL,
+    serial_no       VARCHAR(50) DEFAULT NULL,
+    camera_id       VARCHAR(50) DEFAULT NULL,
+    state           INT DEFAULT NULL,
+    primary_cluster_manager INT DEFAULT NULL,
+    status          TINYINT(1) DEFAULT 0,
+    is_delete       TINYINT(1) DEFAULT 0,
+    added_date      DATETIME DEFAULT NULL,
+    updated_date    DATETIME DEFAULT NULL
+  )`).catch(()=>{});
+
+  // ── staff table ─────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS staff (
+    id                  INT PRIMARY KEY,
+    user_type           INT DEFAULT NULL,
+    fname               VARCHAR(30) DEFAULT NULL,
+    mname               VARCHAR(30) DEFAULT NULL,
+    lname               VARCHAR(30) DEFAULT NULL,
+    mobile              VARCHAR(20) DEFAULT NULL,
+    email               VARCHAR(40) DEFAULT NULL,
+    designation         VARCHAR(30) DEFAULT NULL,
+    department          VARCHAR(30) DEFAULT NULL,
+    store_id            INT DEFAULT NULL,
+    station_code        VARCHAR(20) DEFAULT NULL,
+    joing_date          DATE DEFAULT NULL,
+    resign_date         DATE DEFAULT NULL,
+    dob                 DATE DEFAULT NULL,
+    blood_group         INT DEFAULT NULL,
+    adhar_card          VARCHAR(20) DEFAULT NULL,
+    pan_card_number     VARCHAR(100) DEFAULT NULL,
+    voter_id            VARCHAR(50) DEFAULT NULL,
+    license             VARCHAR(20) DEFAULT NULL,
+    licence_expiry      DATE DEFAULT NULL,
+    bank_name           VARCHAR(30) DEFAULT NULL,
+    account_no          VARCHAR(30) DEFAULT NULL,
+    ifsc_code           VARCHAR(20) DEFAULT NULL,
+    account_name        VARCHAR(50) DEFAULT NULL,
+    uan                 VARCHAR(40) DEFAULT NULL,
+    esic                VARCHAR(40) DEFAULT NULL,
+    ctc                 VARCHAR(10) DEFAULT NULL,
+    gross_salary        VARCHAR(10) DEFAULT NULL,
+    per_parcel          VARCHAR(10) DEFAULT NULL,
+    salary              DECIMAL(7,2) DEFAULT NULL,
+    address             VARCHAR(300) DEFAULT NULL,
+    pincode             VARCHAR(20) DEFAULT NULL,
+    emergency_contact_1 VARCHAR(20) DEFAULT NULL,
+    emergency_contact_2 VARCHAR(20) DEFAULT NULL,
+    associate_id        VARCHAR(80) DEFAULT NULL,
+    employement_history VARCHAR(300) DEFAULT NULL,
+    userid              VARCHAR(30) DEFAULT NULL,
+    status              TINYINT(1) DEFAULT NULL,
+    inactive_date       DATE DEFAULT NULL,
+    is_delete           TINYINT(1) DEFAULT 0,
+    added_date          DATETIME DEFAULT NULL,
+    updated_date        DATETIME DEFAULT NULL,
+    last_login          DATETIME DEFAULT NULL
+  )`).catch(()=>{});
+
+  // ── enrich config_whic with staff-linked columns ────────
+  await addCol("ALTER TABLE config_whic ADD COLUMN staff_id INT DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN mobile VARCHAR(20) DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN dob DATE DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN joining_date DATE DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN resign_date DATE DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN bank_name VARCHAR(30) DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN account_no VARCHAR(30) DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN ifsc_code VARCHAR(20) DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN account_name VARCHAR(50) DEFAULT NULL");
+  await addCol("ALTER TABLE config_whic ADD COLUMN per_parcel VARCHAR(10) DEFAULT NULL");
+
   console.log('Migrations done.');
 })().catch(e => console.error('Migration error:', e.message));
 
+
+// ── Payroll verify ───────────────────────────────────────
+app.post('/api/admin/payroll-verify', (req, res) => {
+  const { password } = req.body;
+  if (password === 'pay@2024') res.json({ok:true});
+  else res.status(401).json({ok:false});
+});
+
+// ── Payroll staff export ──────────────────────────────────
+app.get('/api/admin/payroll-staff', async (req, res) => {
+  const { station, user_type } = req.query;
+  const roleMap = {
+    1:'Admin', 2:'Station Incharge', 4:'Delivery Associate',
+    5:'Cluster Manager', 6:'Store Admin', 7:'Account',
+    8:'Van Associate', 11:'Head Office Admin', 13:'Travelling Manager',
+    14:'Station Associate', 15:'Operation Manager', 16:'HR Admin',
+    17:'Assistance Cluster Manager', 18:'Process Associate',
+    19:'SLPT Team Leader', 20:'Loader', 21:'CP Point'
+  };
+  let sql = `
+    SELECT s.id, s.user_type, st.store_name, s.station_code,
+           CONCAT(TRIM(COALESCE(s.fname,'')), ' ', TRIM(COALESCE(s.lname,''))) AS full_name,
+           s.ctc, s.pan_card_number, s.ifsc_code, s.account_no,
+           CONCAT(TRIM(COALESCE(cm.fname,'')), ' ', TRIM(COALESCE(cm.lname,''))) AS cluster_manager
+    FROM staff s
+    LEFT JOIN stations st ON LOWER(st.station_code) = LOWER(s.station_code)
+    LEFT JOIN staff cm ON cm.id = st.primary_cluster_manager
+    WHERE s.status = 0 AND s.is_delete = 0`;
+  const p = [];
+  if (station)   { sql += ' AND LOWER(s.station_code)=LOWER(?)'; p.push(station); }
+  if (user_type) { sql += ' AND s.user_type=?'; p.push(user_type); }
+  sql += ' ORDER BY s.station_code, s.user_type, s.fname';
+  try {
+    const [rows] = await pool.execute(sql, p);
+    res.json(rows.map(r => ({
+      store_name:      r.store_name || '',
+      station_code:    r.station_code || '',
+      id:              r.id,
+      full_name:       r.full_name.trim(),
+      ctc:             r.ctc || '',
+      pan_card_number: r.pan_card_number || '',
+      user_type:       roleMap[r.user_type] || ('Type ' + r.user_type),
+      cluster_manager: r.cluster_manager.trim(),
+      ifsc_code:       r.ifsc_code || '',
+      account_no:      r.account_no || ''
+    })));
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Stations admin list ──────────────────────────────────
+app.get('/api/admin/stations-list', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT station_code, store_name, legacy_store_id, address, pincode,
+              store_email, esic, store_cat, latitude, longitude,
+              amazon_id, serial_no, camera_id, state,
+              primary_cluster_manager, status, is_delete, added_date
+       FROM stations WHERE is_delete=0 ORDER BY station_code`
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Staff profile detail ─────────────────────────────────
+app.get('/api/admin/staff/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT * FROM staff WHERE id=? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({error:'Not found'});
+    const r = rows[0];
+    const safeDate = v => {
+      if (!v) return null;
+      const s = String(v).substring(0,10);
+      return (s === '0000-00-00' || s.startsWith('Invalid')) ? null : s;
+    };
+    const safe = {...r};
+    delete safe.aadhar_image; delete safe.pan_image; delete safe.cheque_image;
+    delete safe.bank_proof; delete safe.license_image; delete safe.voter_image;
+    delete safe.profile_image; delete safe.form11;
+    ['joing_date','resign_date','dob','inactive_date','licence_expiry'].forEach(k => {
+      if (safe[k] !== undefined) safe[k] = safeDate(safe[k]);
+    });
+    ['added_date','updated_date','last_login'].forEach(k => {
+      if (safe[k]) safe[k] = String(safe[k]).substring(0,19);
+    });
+    res.json(safe);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Staff Directory ──────────────────────────────────────
+app.get('/api/admin/staff-directory', async (req, res) => {
+  const {role, status, station, q} = req.query;
+  const roleNames = {1:'Admin', 2:'Station Incharge', 3:'Van', 4:'Delivery Associate',
+      5:'Cluster Manager', 6:'Store Admin', 7:'Account',
+      8:'Van Associate', 11:'Head Office Admin', 13:'Travelling Manager',
+      14:'Station Associate', 15:'Operation Manager', 16:'HR Admin',
+      17:'Assistance Cluster Manager', 18:'Process Associate',
+      19:'SLPT Team Leader', 20:'Loader', 21:'CP Point'};
+  let sql = `SELECT id, user_type, fname, mname, lname, mobile, email,
+                    designation, station_code, joing_date, resign_date, status, is_delete
+             FROM staff WHERE is_delete=0`;
+  const p = [];
+  if (role)    { sql += ' AND user_type=?'; p.push(role); }
+  if (station) { sql += ' AND station_code=?'; p.push(station); }
+  if (status === 'active')   { sql += ' AND (resign_date IS NULL OR resign_date=\'0000-00-00\' OR resign_date>CURDATE()) AND status=0'; }
+  if (status === 'resigned') { sql += ' AND resign_date IS NOT NULL AND resign_date!=\'0000-00-00\' AND resign_date<=CURDATE()'; }
+  if (q) { sql += ' AND (fname LIKE ? OR lname LIKE ? OR mobile LIKE ? OR CAST(id AS CHAR) LIKE ?)';
+            const lq = `%${q}%`; p.push(lq,lq,lq,lq); }
+  sql += ' ORDER BY fname, lname LIMIT 500';
+  try {
+    const [rows] = await pool.execute(sql, p);
+    const safeDate = v => {
+      if (!v) return null;
+      const s = v instanceof Date ? v.toISOString().substring(0,10) : String(v).substring(0,10);
+      return (s === '0000-00-00' || s.startsWith('Invalid')) ? null : s;
+    };
+    res.json(rows.map(r => {
+      const rd = safeDate(r.resign_date);
+      return {
+        id: r.id,
+        name: [r.fname, r.mname, r.lname].filter(Boolean).map(s=>s.trim()).join(' ').replace(/\s+/,' '),
+        user_type: r.user_type,
+        role: roleNames[r.user_type] || ('Role ' + r.user_type),
+        station_code: r.station_code || '—',
+        mobile: r.mobile || '—',
+        email: r.email || '',
+        joining: safeDate(r.joing_date) || '—',
+        resign_date: rd,
+        is_active: (!rd || new Date(rd) > new Date()) && r.status === 0
+      };
+    }));
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── LEGACY SYNC — pull stations + staff + config_whic from legacy DB ──
+app.post('/api/admin/legacy-sync', async (req, res) => {
+  const results = {stations:0, staff:0, config_whic:0, errors:[]};
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // ── 1. Sync stations from legacy stores ──────────────
+    const [stores] = await legacyPool.execute(
+      `SELECT s.id, TRIM(REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')) AS station_code,
+              TRIM(REPLACE(REPLACE(s.store_id,CHAR(13),''),CHAR(10),'')) AS store_name, s.address, s.pincode, s.store_email,
+              s.esic, s.store_cat, s.latitude, s.longitude, s.amazon_id,
+              s.serial_no, s.camera_id, s.state, s.primary_cluster_manager,
+              s.status, s.is_delete, s.added_date, s.updated_date
+       FROM stores s WHERE s.station_code IS NOT NULL AND TRIM(s.station_code)!=''`
+    );
+    for (const s of stores) {
+      if (!s.station_code) continue;
+      await conn.execute(
+        `INSERT INTO stations
+           (station_code, store_name, legacy_store_id, address, pincode, store_email,
+            esic, store_cat, latitude, longitude, amazon_id, serial_no, camera_id,
+            state, primary_cluster_manager, status, is_delete, added_date, updated_date)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           store_name=VALUES(store_name), legacy_store_id=VALUES(legacy_store_id),
+           address=VALUES(address), pincode=VALUES(pincode), store_email=VALUES(store_email),
+           esic=VALUES(esic), store_cat=VALUES(store_cat), latitude=VALUES(latitude),
+           longitude=VALUES(longitude), amazon_id=VALUES(amazon_id),
+           serial_no=VALUES(serial_no), camera_id=VALUES(camera_id),
+           state=VALUES(state), primary_cluster_manager=VALUES(primary_cluster_manager),
+           status=VALUES(status), is_delete=VALUES(is_delete), updated_date=VALUES(updated_date)`,
+        [s.station_code, s.store_name, s.id, s.address, s.pincode, s.store_email,
+         s.esic, s.store_cat, s.latitude, s.longitude, s.amazon_id,
+         s.serial_no, s.camera_id, s.state, s.primary_cluster_manager,
+         s.status, s.is_delete, s.added_date, s.updated_date]
+      ).catch(e => results.errors.push(`station ${s.station_code}: ${e.message}`));
+      results.stations++;
+    }
+
+    // ── 2. Sync all staff from legacy users ──────────────
+    const [users] = await legacyPool.execute(
+      `SELECT u.id, u.user_type, u.fname, u.mname, u.lname, u.mobile, u.email,
+              u.designation, u.department, u.store_id,
+              TRIM(REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')) AS station_code,
+              u.joing_date, u.resign_date, u.dob, u.blood_group,
+              u.adhar_card, u.pan_card_number, u.voter_id,
+              u.license, u.licence_expiry,
+              u.bank_name, u.account_no, u.ifsc_code, u.account_name,
+              u.uan, u.esic, u.ctc, u.gross_salary, u.per_parcel, u.salary,
+              u.address, u.pincode, u.emergency_contact_1, u.emergency_contact_2,
+              u.associate_id, u.employement_history, u.userid,
+              u.status, u.inactive_date, u.is_delete, u.added_date, u.updated_date, u.last_login
+       FROM users u LEFT JOIN stores s ON s.id=u.store_id
+       WHERE u.is_delete=0`
+    );
+    const safeD = v => {
+      if (!v) return null;
+      const s = String(v).substring(0,10);
+      return (s === '0000-00-00' || s.startsWith('Invalid') || s === 'null') ? null : s;
+    };
+    for (const u of users) {
+      await conn.execute(
+        `INSERT INTO staff
+           (id, user_type, fname, mname, lname, mobile, email, designation, department,
+            store_id, station_code, joing_date, resign_date, dob, blood_group,
+            adhar_card, pan_card_number, voter_id, license, licence_expiry,
+            bank_name, account_no, ifsc_code, account_name, uan, esic, ctc,
+            gross_salary, per_parcel, salary, address, pincode,
+            emergency_contact_1, emergency_contact_2, associate_id,
+            employement_history, userid, status, inactive_date, is_delete,
+            added_date, updated_date, last_login)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           user_type=VALUES(user_type), fname=VALUES(fname), mname=VALUES(mname),
+           lname=VALUES(lname), mobile=VALUES(mobile), email=VALUES(email),
+           designation=VALUES(designation), department=VALUES(department),
+           store_id=VALUES(store_id), station_code=VALUES(station_code),
+           joing_date=VALUES(joing_date), resign_date=VALUES(resign_date),
+           dob=VALUES(dob), bank_name=VALUES(bank_name), account_no=VALUES(account_no),
+           ifsc_code=VALUES(ifsc_code), per_parcel=VALUES(per_parcel),
+           status=VALUES(status), is_delete=VALUES(is_delete),
+           updated_date=VALUES(updated_date)`,
+        [u.id, u.user_type, u.fname, u.mname, u.lname, u.mobile, u.email,
+         u.designation, u.department, u.store_id, u.station_code,
+         safeD(u.joing_date), safeD(u.resign_date), safeD(u.dob), u.blood_group,
+         u.adhar_card, u.pan_card_number, u.voter_id, u.license, safeD(u.licence_expiry),
+         u.bank_name, u.account_no, u.ifsc_code, u.account_name, u.uan, u.esic,
+         u.ctc, u.gross_salary, u.per_parcel, u.salary, u.address, u.pincode,
+         u.emergency_contact_1, u.emergency_contact_2, u.associate_id,
+         u.employement_history, u.userid, u.status, safeD(u.inactive_date), u.is_delete,
+         u.added_date, u.updated_date, u.last_login]
+      ).catch(e => results.errors.push(`staff ${u.id}: ${e.message}`));
+      results.staff++;
+    }
+
+    // ── 3. Repopulate config_whic from staff (all operational user types) ──
+    const roleMap = {
+      1:'Admin', 2:'Station Incharge', 4:'Delivery Associate',
+      5:'Cluster Manager', 6:'Store Admin', 7:'Account',
+      8:'Van Associate', 11:'Head Office Admin', 13:'Travelling Manager',
+      14:'Station Associate', 15:'Operation Manager', 16:'HR Admin',
+      17:'Assistance Cluster Manager', 18:'Process Associate',
+      19:'SLPT Team Leader', 20:'Loader', 21:'CP Point'
+    };
+    const whicTypes = new Set([1,2,4,5,6,7,8,11,13,14,15,16,17,18,19,20,21]);
+    const whicUsers = users.filter(u => whicTypes.has(u.user_type) && u.station_code);
+    for (const u of whicUsers) {
+      const fullName = [u.fname, u.mname, u.lname].filter(Boolean).map(s=>s.trim()).join(' ').replace(/\s+/,' ').trim();
+      const isActive = (u.status === 0 || u.status === '0') ? 1 : 0;
+      await conn.execute(
+        `INSERT INTO config_whic
+           (ic_id, ic_name, station_code, ic_title, is_active, enrollment_status,
+            staff_id, mobile, dob, joining_date, resign_date,
+            bank_name, account_no, ifsc_code, account_name, per_parcel,
+            can_access_modules)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+         ON DUPLICATE KEY UPDATE
+           ic_name=VALUES(ic_name), station_code=VALUES(station_code),
+           ic_title=VALUES(ic_title),
+           is_active=VALUES(is_active),
+           staff_id=VALUES(staff_id), mobile=VALUES(mobile), dob=VALUES(dob),
+           joining_date=VALUES(joining_date), resign_date=VALUES(resign_date),
+           bank_name=VALUES(bank_name), account_no=VALUES(account_no),
+           ifsc_code=VALUES(ifsc_code), account_name=VALUES(account_name),
+           per_parcel=VALUES(per_parcel)`,
+        [String(u.id), fullName, u.station_code, roleMap[u.user_type] || ('Type '+u.user_type),
+         isActive, 'PENDING', u.id,
+         u.mobile??null, safeD(u.dob), safeD(u.joing_date), safeD(u.resign_date),
+         u.bank_name??null, u.account_no??null, u.ifsc_code??null,
+         u.account_name??null, u.per_parcel??null]
+      ).catch(e => results.errors.push(`whic ${u.id}: ${e.message}`));
+      results.config_whic++;
+    }
+
+    await conn.commit();
+    res.json({success:true, ...results});
+  } catch(e) {
+    await conn.rollback();
+    res.status(500).json({error: e.message, partial: results});
+  } finally { conn.release(); }
+});
 
 app.get('/api/shift-status-batch/:station', async (req, res) => {
   try {
     const station = req.params.station;
     // Get all staff IDs for this station from legacy DB
-    const SC = "REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')";
-    const [staff] = await legacyPool.execute(
-      `SELECT u.id AS ic_id FROM users u LEFT JOIN stores s ON s.id=u.store_id
-       WHERE u.is_delete=0 AND u.status=0
-         AND u.designation IN ('Delivery Associate','Station Associate','Station Incharge','Station Incahrge','Van Associate')
-         AND ${SC}=?`, [station]
+    const [staff] = await pool.execute(
+      `SELECT ic_id FROM config_whic WHERE is_active=1 AND station_code=?`, [station]
     );
     if (!staff.length) return res.json({});
     const ids = staff.map(s => String(s.ic_id));

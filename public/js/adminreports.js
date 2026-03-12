@@ -103,21 +103,6 @@ async function _doAdvDecide(id, status, note, btn) {
 }
 
 // -- DEB REPORT --------------------------------------------
-async function loadDeb(){
-  const p=document.getElementById('deb-period').value; if(!p)return;
-  const st=getGlobalStation();
-  try{const data=await fetch(`/api/admin/deb-report?period=${p}${st?'&station='+st:''}`).then(r=>r.json());
-    document.getElementById('deb-body').innerHTML=data.length?data.map(r=>`<tr data-search="${r.station_code.toLowerCase()} ${(r.tid||'').toLowerCase()}">
-      <td>${r.station_code}</td><td><span class="mono">${r.tid}</span></td>
-      <td style="font-size:.8rem">${r.sub_type||'-'}</td><td>${r.decision||'-'}</td>
-      <td style="font-size:.8rem">${r.rec_type||'-'}</td>
-      <td style="font-size:.8rem">${r.tt_number||'-'}</td>
-      <td style="font-size:.8rem">${r.orphan_ref||'-'}</td>
-      <td style="font-size:.78rem;color:var(--text-2)">${r.remarks||'-'}</td>
-      <td style="font-size:.78rem;color:var(--text-2)">${new Date(r.submitted_at).toLocaleString('en-IN')}</td></tr>`).join('')
-      :'<tr class="empty-row"><td colspan="9">No data</td></tr>';
-  }catch(e){toast('Failed.','error');}
-}
 
 // -- DATA MANAGEMENT ---------------------------------------
 async function setPeriod(){

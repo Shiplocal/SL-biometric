@@ -242,6 +242,7 @@ async function loadDebAdmin() {
 }
 
 // ── SELECTION ──────────────────────────────────────────────
+
 function debRowCheck(id, checked) {
   checked ? debSelectedIds.add(id) : debSelectedIds.delete(id);
   const row = document.getElementById(`dadmin-row-${id}`);

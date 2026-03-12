@@ -222,22 +222,24 @@ tr:hover td{background:rgba(13,27,42,.012)}
       <select id="global-station" style="padding:6px 28px 6px 10px;font-size:.82rem;border-radius:8px;border:1.5px solid var(--border);background:var(--card);color:var(--text-1);cursor:pointer" onchange="onGlobalStationChange()">
         <option value="">🏢 All Stations</option>
       </select>
-      <span class="period-chip" id="active-period">-</span>
+      <span class="period-chip" id="active-period" onclick="_payrollUnlockClick()" style="cursor:default">-</span>
       <button class="btn btn-ghost btn-sm" onclick="refreshAll()">↻ Refresh</button>
     </div>
   </div>
 
   <div class="tabs">
     <button class="tab active" onclick="sw('t-ov')"       id="tab-t-ov">📊 Overview</button>
-    <button class="tab"        onclick="sw('t-users');loadEnroll()"    id="tab-t-users">👤 Users <span class="cnt" id="cnt-users">0</span><span class="cnt" id="cnt-enroll" style="background:rgba(245,158,11,.15);color:var(--amber-d);display:none">0</span></button>
+    <button class="tab"        onclick="sw('t-users');loadEnroll();loadStaffDir()"    id="tab-t-users">👷 WHIC <span class="cnt" id="cnt-users">0</span><span class="cnt" id="cnt-enroll" style="background:rgba(245,158,11,.15);color:var(--amber-d);display:none">0</span></button>
     <button class="tab"        onclick="sw('t-machines')" id="tab-t-machines">🖥 Machines <span class="cnt" id="cnt-machines">0</span></button>
     <button class="tab"        onclick="sw('t-viol')"     id="tab-t-viol">⚠️ Violations <span class="cnt" id="cnt-viol" style="background:rgba(239,68,68,.15);color:var(--red-d)">0</span></button>
     <button class="tab"        onclick="sw('t-kms')"      id="tab-t-kms">🚚 KMS</button>
     <button class="tab"        onclick="sw('t-adv')"      id="tab-t-adv">💰 Advances</button>
     <button class="tab"        onclick="sw('t-deb')"      id="tab-t-deb">💸 Debit Notes</button>
+    <button class="tab"        onclick="sw('t-stations');loadStations()" id="tab-t-stations">📍 Stations</button>
     <button class="tab"        onclick="sw('t-data')"     id="tab-t-data">⚙️ Settings</button>
     <button class="tab"        onclick="sw('t-legacy');loadLegacyTab()" id="tab-t-legacy" style="color:var(--green-d)">🗄️ Legacy Data</button>
     <button class="tab"        onclick="sw('t-test');loadTestFlags()" id="tab-t-test" style="color:var(--amber-d)">🧪 Test Mode</button>
+    <button class="tab" onclick="sw('t-payroll');loadPayrollTab()" id="tab-t-payroll" style="color:var(--green-d);display:none">💰 Payroll</button>
   </div>
 
   <!-- FACE ENROLMENTS -->
@@ -277,26 +279,35 @@ tr:hover td{background:rgba(13,27,42,.012)}
 
   <!-- USERS -->
   <div id="t-users" class="tab-panel">
-    <!-- Pending enrolments - shown inline at top of Users tab -->
+
+    <!-- 1. Pending Face Enrolments -->
     <div class="pc" id="enroll-pending-pc">
       <div class="pc-hd">
-        <div><div class="pc-title">🪪 Pending Face Enrolments</div><div class="pc-sub">Review captured photo against CCTV - approve or reject</div></div>
+        <div><div class="pc-title">🪪 Pending Face Enrolments</div><div class="pc-sub">Review captured photo against CCTV — approve or reject</div></div>
         <button class="btn btn-ghost btn-sm" onclick="loadEnroll()">↻ Refresh</button>
       </div>
       <div id="enroll-pending-wrap" style="padding:16px">
         <div style="text-align:center;color:var(--text-3);padding:28px;font-size:.84rem">Loading…</div>
       </div>
     </div>
+
+    <!-- 2. Enrolled Users — paginated table -->
     <div class="pc" id="enroll-approved-pc">
-      <div class="pc-hd"><div><div class="pc-title">All Enrolled Users</div><div class="pc-sub">Approved face enrolments with reference photos</div></div></div>
-      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-enrolled" placeholder="Search…" oninput="filterEnrolled(this.value)"></div></div>
-      <div id="enroll-approved-wrap" style="padding:16px">
+      <div class="pc-hd">
+        <div><div class="pc-title">✅ Enrolled Users</div><div class="pc-sub">Approved face enrolments</div></div>
+        <div class="sbar" style="margin:0"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-enrolled" placeholder="Search name, ID, station…" oninput="filterEnrolled(this.value)"></div></div>
+      </div>
+      <div id="enroll-approved-wrap">
         <div style="text-align:center;color:var(--text-3);padding:28px;font-size:.84rem">Loading…</div>
       </div>
+      <div id="enrolled-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border);font-size:.8rem;color:var(--text-3)"></div>
     </div>
+
+    <!-- 3. All WHIC Staff — paginated -->
     <div class="pc">
-      <div class="pc-hd"><div><div class="pc-title">All Users</div><div class="pc-sub">Manage IC staff - offboard departed employees</div></div>
-        <div style="display:flex;gap:8px">
+      <div class="pc-hd">
+        <div><div class="pc-title">👷 All WHIC Staff <span id="whic-count" style="font-size:.75rem;font-weight:500;color:var(--text-3);margin-left:6px"></span></div><div class="pc-sub">Manage IC staff — grant access, offboard departed employees</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <select id="users-station-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="filterUsersStation()"><option value="">All Stations</option></select>
           <select id="users-status-filter" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="filterUsersStation()">
             <option value="active">Active</option>
@@ -305,14 +316,54 @@ tr:hover td{background:rgba(13,27,42,.012)}
           </select>
         </div>
       </div>
-      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-au" placeholder="Search name, ID, station…" oninput="filterTbl('all-users','s-au')"></div></div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-au" placeholder="Search name, ID, station…" oninput="whicSearch(this.value)"></div></div>
       <div class="tbl-wrap"><table>
         <thead><tr><th>Name</th><th>IC ID</th><th>Station</th><th>Face</th><th>Violations</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="all-users"></tbody>
       </table></div>
+      <div id="whic-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border);font-size:.8rem;color:var(--text-3)"></div>
     </div>
-  </div>
 
+    <!-- 4. Staff Directory — all 12 roles -->
+    <div class="pc" id="staff-dir-pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">👥 Staff Directory <span id="staff-dir-count" style="font-size:.75rem;font-weight:500;color:var(--text-3);margin-left:6px"></span></div><div class="pc-sub">All staff from legacy — all 12 roles</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="staff-dir-role" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadStaffDir()">
+            <option value="">All Roles</option>
+            <option value="1">Store Manager</option>
+            <option value="2">Delivery Agent</option>
+            <option value="3">Van</option>
+            <option value="4">Super Manager</option>
+            <option value="5">Store Admin</option>
+            <option value="6">Accountant</option>
+            <option value="7">Data Entry Operator</option>
+            <option value="8">Cluster Manager</option>
+            <option value="9">Head Office Admin</option>
+            <option value="10">Email Users</option>
+            <option value="11">Assistance Cluster Manager</option>
+            <option value="12">HR Admin</option>
+          </select>
+          <select id="staff-dir-status" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadStaffDir()">
+            <option value="active">Active</option>
+            <option value="resigned">Resigned</option>
+            <option value="">All</option>
+          </select>
+          <select id="staff-dir-station" style="width:auto;padding:7px 28px 7px 10px;font-size:.82rem" onchange="loadStaffDir()">
+            <option value="">All Stations</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadStaffDir()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-staff-dir" placeholder="Search name, mobile, ID…" oninput="filterStaffDir(this.value)"></div></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Name</th><th>ID</th><th>Role</th><th>Station</th><th>Mobile</th><th>Joining</th><th>Status</th></tr></thead>
+        <tbody id="staff-dir-body"></tbody>
+      </table></div>
+      <div id="staff-dir-footer" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border);font-size:.8rem;color:var(--text-3)"></div>
+    </div>
+
+  </div>
   <!-- MACHINES -->
   <div id="t-machines" class="tab-panel">
     <div class="pc">
@@ -732,6 +783,22 @@ tr:hover td{background:rgba(13,27,42,.012)}
 
   </div>
 
+  <!-- STATIONS -->
+  <div id="t-stations" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">📍 Stations</div><div class="pc-sub">All warehouse stations — store details, contact, infrastructure</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadStations()">↻ Refresh</button>
+      </div>
+      <div class="sbar"><div class="sw"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="s-stations" placeholder="Search station, address, email…" oninput="filterStations(this.value)"></div></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Station</th><th>Store Name</th><th>Type</th><th>Address</th><th>Email</th><th>ESIC</th><th>Camera</th><th>Status</th></tr></thead>
+        <tbody id="stations-body"></tbody>
+      </table></div>
+      <div id="stations-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border);font-size:.8rem;color:var(--text-3)"></div>
+    </div>
+  </div>
+
   <!-- LEGACY DATA BROWSER -->
   <div id="t-legacy" class="tab-panel">
     <div class="pc">
@@ -747,9 +814,10 @@ tr:hover td{background:rgba(13,27,42,.012)}
       </div>
       <!-- Sub-nav -->
       <div style="display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap">
-        <button class="wf-tab active" id="leg-t-stations" onclick="legacySubTab('stations')">🏢 Stations</button>
+        <button class="wf-tab active" id="leg-t-all-tables" onclick="legacySubTab('all-tables')" style="font-weight:700">🗄️ All Tables</button>
+        <button class="wf-tab" id="leg-t-stations" onclick="legacySubTab('stations')">🏢 Stations</button>
         <button class="wf-tab" id="leg-t-ics"      onclick="legacySubTab('ics')">👷 ICs</button>
-        <button class="wf-tab" id="leg-t-users"    onclick="legacySubTab('users')">👤 Staff/Users</button>
+        <button class="wf-tab" id="leg-t-users"    onclick="legacySubTab('users')">👷 Staff/WHIC</button>
         <button class="wf-tab" id="leg-t-debit"    onclick="legacySubTab('debit')">💸 Debit Notes</button>
         <button class="wf-tab" id="leg-t-advances" onclick="legacySubTab('advances')">💰 Advances</button>
         <button class="wf-tab" id="leg-t-salary"   onclick="legacySubTab('salary')">🧾 Salary Slips</button>
@@ -912,8 +980,121 @@ tr:hover td{background:rgba(13,27,42,.012)}
 <script src="js/adminmachines.js"></script>
 <script src="js/adminviolations.js"></script>
 <script src="js/adminreports.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="js/adminlegacy.js"></script>
+<script src="js/adminstations.js"></script>
+<script src="js/adminpayroll.js"></script>
 <script src="js/adminhelpers.js"></script>
-</body>
+
+  <!-- PAYROLL TAB -->
+  <div id="t-payroll" class="tab-panel">
+    <div class="pc">
+      <div class="pc-hd">
+        <div><div class="pc-title">💰 Payroll</div><div class="pc-sub">Payroll data, exports and uploads — restricted access</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadPayrollTab()">↻ Refresh</button>
+      </div>
+      <!-- Sub-tab nav -->
+      <div style="display:flex;gap:4px;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <button class="wf-tab active" id="pay-sub-staff"   onclick="paySubTab('staff')">📊 Staff Payroll</button>
+        <button class="wf-tab"        id="pay-sub-payroll" onclick="paySubTab('payroll')">📤 Past Payroll</button>
+        <button class="wf-tab"        id="pay-sub-kms"     onclick="paySubTab('kms')">🚚 Past KMS/EDSP</button>
+        <button class="wf-tab"        id="pay-sub-petrol"  onclick="paySubTab('petrol')">⛽ Past Petrol</button>
+      </div>
+
+      <!-- Staff Payroll Panel -->
+      <div id="pay-panel-staff" style="padding:16px">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+          <select id="pay-station-filter" style="padding:6px 24px 6px 10px;font-size:.82rem;border-radius:8px;border:1.5px solid var(--border);background:var(--card)">
+            <option value="">All Stations</option>
+          </select>
+          <select id="pay-type-filter" style="padding:6px 24px 6px 10px;font-size:.82rem;border-radius:8px;border:1.5px solid var(--border);background:var(--card)">
+            <option value="">All Types</option>
+            <option value="2">Station Incharge</option>
+            <option value="4">Delivery Associate</option>
+            <option value="5">Cluster Manager</option>
+            <option value="8">Van Associate</option>
+            <option value="14">Station Associate</option>
+            <option value="18">Process Associate</option>
+            <option value="20">Loader</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadPayrollStaff()">↻ Refresh</button>
+          <button class="btn btn-green btn-sm" onclick="exportPayrollExcel()" style="margin-left:auto">⬇ Export Excel</button>
+        </div>
+        <div style="font-size:.78rem;color:var(--text-3);margin-bottom:8px">
+          Showing <span id="pay-staff-count">0</span> active staff
+        </div>
+        <div class="tbl-wrap" style="max-height:60vh;overflow:auto">
+          <table id="pay-staff-table" style="font-size:.78rem">
+            <thead><tr>
+              <th>Store Name</th><th>Station</th><th>ID</th><th>Name</th>
+              <th>CTC</th><th>PAN</th><th>Role</th><th>Cluster Manager</th>
+              <th>IFSC</th><th>Account No</th>
+            </tr></thead>
+            <tbody id="pay-staff-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Past Payroll Panel -->
+      <div id="pay-panel-payroll" style="display:none;padding:32px;text-align:center;color:var(--text-3)">
+        📤 Past Payroll upload — coming soon
+      </div>
+      <!-- Past KMS/EDSP Panel -->
+      <div id="pay-panel-kms" style="display:none;padding:16px">
+        <div style="font-size:.92rem;font-weight:600;color:var(--navy);margin-bottom:4px">📤 Upload Historical EDSP / KMS Data</div>
+        <div style="font-size:.78rem;color:var(--text-3);margin-bottom:16px">Upload Amazon EDSP response Excel files. Data is saved to IC/KMS tables with period label auto-detected from dates (e.g. feb-2026).</div>
+
+        <!-- File drop zone -->
+        <div id="edsp-dropzone" onclick="document.getElementById('edsp-file-input').click()"
+          style="border:2px dashed var(--border);border-radius:12px;padding:32px;text-align:center;cursor:pointer;transition:border-color .2s;margin-bottom:16px"
+          ondragover="event.preventDefault();this.style.borderColor='var(--navy)'"
+          ondragleave="this.style.borderColor='var(--border)'"
+          ondrop="_edspDrop(event)">
+          <div style="font-size:2rem;margin-bottom:8px">📂</div>
+          <div style="font-size:.88rem;font-weight:600;color:var(--navy)">Drop EDSP Excel file here or click to browse</div>
+          <div style="font-size:.75rem;color:var(--text-3);margin-top:4px">Accepts .xlsx files — one file at a time</div>
+          <input type="file" id="edsp-file-input" accept=".xlsx" style="display:none" onchange="_edspFileChosen(this.files[0])">
+        </div>
+
+        <!-- Preview area -->
+        <div id="edsp-preview" style="display:none;background:var(--bg);border-radius:10px;padding:16px;margin-bottom:16px;font-size:.82rem">
+          <div style="font-weight:600;color:var(--navy);margin-bottom:10px">📋 File Preview</div>
+          <div id="edsp-preview-body"></div>
+          <div style="display:flex;gap:8px;margin-top:14px">
+            <button class="btn btn-ghost btn-sm" onclick="_edspReset()">✕ Cancel</button>
+            <button class="btn btn-green btn-sm" id="edsp-confirm-btn" onclick="_edspConfirmUpload()">✓ Confirm Upload</button>
+          </div>
+        </div>
+
+        <!-- Result area -->
+        <div id="edsp-result" style="display:none;font-size:.82rem"></div>
+
+        <!-- Uploaded periods list -->
+        <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
+          <div style="font-weight:600;color:var(--navy);font-size:.85rem;margin-bottom:10px">📁 Uploaded Historical Periods</div>
+          <div id="edsp-periods-list" style="font-size:.78rem;color:var(--text-3)">Loading…</div>
+        </div>
+      </div>
+      <!-- Past Petrol Panel -->
+      <div id="pay-panel-petrol" style="display:none;padding:32px;text-align:center;color:var(--text-3)">
+        ⛽ Past Petrol upload — coming soon
+      </div>
+    </div>
+  </div>
+
+  <!-- Staff Profile Modal -->
+  <div id="staff-profile-modal" class="modal hidden" onclick="if(event.target===this)closeModal('staff-profile-modal')">
+    <div class="modal-box" style="max-width:680px;max-height:85vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+        <div>
+          <div id="spm-name" style="font-size:1.2rem;font-weight:700;color:var(--navy)"></div>
+          <div id="spm-role" style="font-size:.82rem;color:var(--text-2);margin-top:3px"></div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="closeModal('staff-profile-modal')">✕ Close</button>
+      </div>
+      <div id="spm-body"></div>
+    </div>
+  </div>
+
 </body>
 </html>

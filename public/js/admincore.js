@@ -98,6 +98,7 @@ function sw(id){
   else if(id==='t-machines')loadMachines();
   else if(id==='t-legacy')loadLegacyTab();
   else if(id==='t-test')loadTestFlags();
+  else if(id==='t-payroll')loadPayrollTab();
   else if(id==='t-data'){}
 }
 
@@ -202,7 +203,6 @@ async function toggleEdspPublish(cycleId, publish){
   if(r.ok){toast(publish?'Cycle set as active ✓':'Cycle deactivated.', publish?'success':'warning');loadEdspCycles();}
   else toast('Failed.','error');
 }// -- DEBIT ADMIN ------------------------------------------
-let debAdmFile = null;
 let _debStationsLoaded = false;
 
 function populateDebStations() {
