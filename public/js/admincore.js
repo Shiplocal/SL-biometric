@@ -127,14 +127,27 @@ function onEdspFileSelected(input) {
 }
 
 function autoFillEdspLabel() {
-  const from=document.getElementById('edsp-from').value;
-  const to=document.getElementById('edsp-to').value;
-  if(from&&to){
-    const f=new Date(from),t=new Date(to);
-    const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const label=`${months[f.getMonth()]} ${f.getDate()}-${t.getDate()} ${t.getFullYear()}`;
-    document.getElementById('edsp-cycle-label').value=label;
+  const from = document.getElementById('edsp-from').value;
+  const to   = document.getElementById('edsp-to').value;
+  if (from && to) {
+    const label = _genPeriodLabel(from, to);
+    document.getElementById('edsp-cycle-label').value = label;
   }
+}
+
+// Unified period label generator — same logic as historical upload
+// Returns feb-2026-a (1-15), feb-2026-b (16-end), or feb-2026 (full month)
+function _genPeriodLabel(fromStr, toStr) {
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const [fy, fm, fd] = fromStr.split('-').map(Number);
+  const [ty, tm, td] = toStr.split('-').map(Number);
+  // Use to-date month as the reference (majority of data)
+  const mon = months[tm - 1];
+  const yr  = ty;
+  // Determine half: if to-date <= 15 → -a, if from-date >= 16 → -b, else full month
+  if (td <= 15) return `${mon}-${yr}-a`;
+  if (fd >= 16) return `${mon}-${yr}-b`;
+  return `${mon}-${yr}`;
 }
 document.addEventListener('DOMContentLoaded',()=>{ 
   document.getElementById('edsp-from')?.addEventListener('change',autoFillEdspLabel);

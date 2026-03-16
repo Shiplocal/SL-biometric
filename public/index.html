@@ -87,18 +87,18 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
 .empty-row td{text-align:center;color:var(--text-3);padding:32px;font-size:.85rem}
 /* -- KMS TABLE -- */
 .kms-tbl{width:100%;table-layout:fixed;border-collapse:collapse}
-.kms-tbl th{padding:7px 8px;font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);background:#f8fafc;border-bottom:2px solid var(--border);white-space:nowrap;text-align:left}
-.kms-tbl td{padding:6px 8px;font-size:.8rem;white-space:nowrap;vertical-align:middle;border-bottom:1px solid var(--border)}
+.kms-tbl th{padding:5px 6px;font-size:.65rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);background:#f8fafc;border-bottom:2px solid var(--border);white-space:nowrap;text-align:left}
+.kms-tbl td{padding:5px 6px;font-size:.75rem;white-space:nowrap;vertical-align:middle;border-bottom:1px solid var(--border)}
 /* Column widths: fixed layout lets us control exactly */
-.kms-tbl col.col-cb   {width:32px}
-.kms-tbl col.col-amx  {width:200px}
-.kms-tbl col.col-date {width:72px}
-.kms-tbl col.col-ic   {width:160px}
-.kms-tbl col.col-kms  {width:58px}
-.kms-tbl col.col-type {width:72px}
-.kms-tbl col.col-num  {width:44px}
-/* AMX ID: truncate with ellipsis */
-.kms-tbl td.parent-cell:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kms-tbl col.col-cb   {width:28px}
+.kms-tbl col.col-amx  {width:180px}
+.kms-tbl col.col-date {width:62px}
+.kms-tbl col.col-ic   {width:150px}
+.kms-tbl col.col-kms  {width:50px}
+.kms-tbl col.col-type {width:68px}
+.kms-tbl col.col-num  {width:40px}
+/* AMX ID: truncate with ellipsis — applies to all parent-cells */
+.kms-tbl td.parent-cell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
 /* IC name input: fills the cell */
 .kms-tbl td input[list],.kms-tbl td input[type="text"]{width:100%;padding:4px 6px;font-size:.78rem;box-sizing:border-box}
 /* KMS number input: narrow centered */
@@ -190,6 +190,23 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
 @keyframes toastOut{from{opacity:1}to{opacity:0;transform:translateX(18px)}}
 .hidden{display:none !important}
 .period-pill{background:var(--navy-2);color:#e2e8f0;font-family:'DM Mono',monospace;font-size:.7rem;font-weight:600;padding:3px 10px;border-radius:12px}
+
+@media (max-width:1440px){
+  .kms-tbl col.col-amx  {width:160px}
+  .kms-tbl col.col-date {width:56px}
+  .kms-tbl col.col-ic   {width:130px}
+  .kms-tbl col.col-kms  {width:46px}
+  .kms-tbl col.col-type {width:62px}
+  .kms-tbl col.col-num  {width:36px}
+  .kms-tbl td.parent-cell{max-width:160px}
+  .kms-tbl td{font-size:.72rem;padding:4px 5px}
+  .kms-tbl th{font-size:.62rem;padding:4px 5px}
+}
+@media (max-width:1280px){
+  .dash{padding:16px 12px}
+  .mc-grid{gap:10px}
+  .emp-row{padding:8px 10px}
+}
 </style>
 </head>
 <body>
@@ -438,7 +455,7 @@ td input,td select{padding:7px 10px;font-size:.83rem;background:#f8fafc;margin:0
     <div class="face-status idle" id="face-status"><span id="face-status-txt">Initialising camera…</span></div>
     <div class="modal-btns">
       <button class="btn btn-ghost" style="flex:none;padding:10px 18px" onclick="closeFace()">Cancel</button>
-      <button class="btn btn-primary" id="btn-face-action" disabled onclick="doFaceAction()">Please wait…</button>
+      <button class="btn btn-primary" id="btn-face-action" disabled>Please wait…</button>
     </div>
   </div>
 </div>

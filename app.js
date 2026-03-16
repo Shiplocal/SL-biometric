@@ -689,9 +689,22 @@ app.post('/api/admin/upload-historical-edsp', async (req, res) => {
   const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
   const minDate = parsed.reduce((m,r) => r.dDate < m ? r.dDate : m, parsed[0].dDate);
   const maxDate = parsed.reduce((m,r) => r.dDate > m ? r.dDate : m, parsed[0].dDate);
-  // Parse date parts directly to avoid UTC timezone shifting
-  const [py, pm] = minDate.split('-').map(Number);
-  const period_label = months[pm - 1] + '-' + py;
+  // Use majority month + half detection for unified period label (e.g. feb-2026-a, feb-2026-b, feb-2026)
+  const monthCount = {};
+  parsed.forEach(r => {
+    const ym = r.dDate.substring(0, 7);
+    monthCount[ym] = (monthCount[ym] || 0) + 1;
+  });
+  const majorityYM = Object.entries(monthCount).sort((a,b) => b[1]-a[1])[0][0];
+  const [py, pm] = majorityYM.split('-').map(Number);
+  const mon = months[pm - 1];
+  // Determine half from actual date range within majority month
+  const [miny_d, minm_d, mind_d] = minDate.split('-').map(Number);
+  const [maxy_d, maxm_d, maxd_d] = maxDate.split('-').map(Number);
+  let period_label;
+  if (maxd_d <= 15) period_label = `${mon}-${py}-a`;
+  else if (mind_d >= 16) period_label = `${mon}-${py}-b`;
+  else period_label = `${mon}-${py}`;
 
   // Preview mode — just return stats
   if (preview) {
@@ -701,77 +714,42 @@ app.post('/api/admin/upload-historical-edsp', async (req, res) => {
                      date_from:minDate, date_to:maxDate, stations, ic_count:ics});
   }
 
-  // Insert mode — bulk insert in chunks of 500
-  const conn = await pool.getConnection();
-  await conn.beginTransaction();
-  let inserted = 0, skipped = 0;
+  // Insert mode — respond immediately, process in background
+  // LiteSpeed proxy times out long-running requests, so we ack first
+  res.json({ok:true, accepted:true, rows:parsed.length, period_label});
 
-  try {
-    // Upsert edsp_cycles record for this period
-    const [existCyc] = await conn.execute(
-      'SELECT id FROM edsp_cycles WHERE cycle_label=? LIMIT 1', [period_label]
-    );
-    let cycleId;
-    if (existCyc.length) {
-      cycleId = existCyc[0].id;
-    } else {
-      const [ins] = await conn.execute(
-        'INSERT INTO edsp_cycles (cycle_label, date_from, date_to, is_active) VALUES (?,?,?,0)',
-        [period_label, minDate, maxDate]
-      );
-      cycleId = ins.insertId;
+  // Background processing
+  (async () => {
+    const conn = await pool.getConnection();
+    try {
+      await conn.execute('SET SESSION wait_timeout=600, interactive_timeout=600');
+      await conn.beginTransaction();
+
+      // Historical upload → log_amx_history only. Never touches log_amx, edsp_cycles or edsp_data.
+      const CHUNK = 500;
+      for (let i = 0; i < parsed.length; i += CHUNK) {
+        const chunk = parsed.slice(i, i + CHUNK);
+        const vals = chunk.map(r =>
+          [r.station_code, r.amx_id, r.ic_id||null, r.ic_name, r.dDate, period_label,
+           0, r.parcel_type, r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.returns||0]
+        );
+        await conn.execute(
+          `INSERT IGNORE INTO log_amx_history
+             (station_code,amx_id,ic_id,ic_name,delivery_date,period_label,
+              kms,parcel_type,delivered,pickup,swa,smd,mfn,returns)
+           VALUES ${chunk.map(()=>'(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')}`,
+          vals.flat()
+        );
+      }
+      await conn.commit();
+      console.log(`[EDSP history] ${period_label} complete — ${parsed.length} rows`);
+    } catch(e) {
+      await conn.rollback();
+      console.error('[EDSP upload] error:', e.message);
+    } finally {
+      conn.release();
     }
-
-    const CHUNK = 500;
-    for (let i = 0; i < parsed.length; i += CHUNK) {
-      const chunk = parsed.slice(i, i + CHUNK);
-
-      // Bulk insert log_amx
-      const amxVals = chunk.map(r =>
-        [r.station_code, r.amx_id, r.ic_id||null, r.ic_name, r.dDate, period_label,
-         0, r.parcel_type, r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.returns||0]
-      );
-      const amxPlaceholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
-      await conn.execute(
-        `INSERT INTO log_amx
-           (station_code,amx_id,ic_id,ic_name,delivery_date,period_label,
-            kms,parcel_type,delivered,pickup,swa,smd,mfn,returns)
-         VALUES ${amxPlaceholders}
-         ON DUPLICATE KEY UPDATE
-           ic_name=VALUES(ic_name), ic_id=VALUES(ic_id),
-           delivered=VALUES(delivered), pickup=VALUES(pickup),
-           swa=VALUES(swa), smd=VALUES(smd), mfn=VALUES(mfn), returns=VALUES(returns)`,
-        amxVals.flat()
-      );
-
-      // Bulk insert edsp_data
-      const edspVals = chunk.map(r =>
-        [cycleId, r.station_code, r.amx_id, r.dDate, r.parcel_type,
-         r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.returns||0]
-      );
-      const edspPlaceholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',');
-      await conn.execute(
-        `INSERT INTO edsp_data
-           (cycle_id,station_code,amx_id,delivery_date,parcel_type,
-            delivered,pickup,swa,smd,mfn,returns)
-         VALUES ${edspPlaceholders}
-         ON DUPLICATE KEY UPDATE
-           delivered=VALUES(delivered), pickup=VALUES(pickup),
-           swa=VALUES(swa), smd=VALUES(smd), mfn=VALUES(mfn), returns=VALUES(returns)`,
-        edspVals.flat()
-      );
-
-      inserted += chunk.length;
-    }
-
-    await conn.commit();
-    conn.release();
-    res.json({ok:true, inserted, skipped, period_label, cycleId});
-  } catch(e) {
-    await conn.rollback();
-    conn.release();
-    res.status(500).json({error:e.message});
-  }
+  })();
 });
 
 // ── List historical EDSP periods ─────────────────────────────────────────────
@@ -779,15 +757,629 @@ app.get('/api/admin/historical-edsp-periods', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT period_label,
-             COUNT(*) AS rows,
+             COUNT(*) AS total_rows,
              COUNT(DISTINCT station_code) AS stations,
+             COUNT(DISTINCT amx_id) AS ics,
              MIN(delivery_date) AS date_from,
              MAX(delivery_date) AS date_to
-      FROM log_amx
-      WHERE period_label REGEXP '^[a-z]+-[0-9]{4}$'
+      FROM log_amx_history
       GROUP BY period_label
       ORDER BY MIN(delivery_date) DESC`);
     res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Payroll history check ────────────────────────────────────────────────────
+app.get('/api/admin/payroll-history-check', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute(
+      'SELECT COUNT(*) AS cnt FROM payroll_history WHERE payroll_month=?', [month]
+    );
+    res.json({exists: r[0].cnt > 0, count: r[0].cnt});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Payroll history upload ────────────────────────────────────────────────────
+app.post('/api/admin/upload-payroll-history', async (req, res) => {
+  const { rows, month, replace } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data received'});
+  if (!month) return res.status(400).json({error:'month required'});
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (replace) {
+      await conn.execute('DELETE FROM payroll_history WHERE payroll_month=?', [month]);
+    }
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`
+          INSERT INTO payroll_history
+            (payroll_month, staff_id, store_name, station_code, head, name,
+             associate_id, present_days, week_off, total_days,
+             delivery, pickup, swa, smd, mfn, seller_returns, total_parcels,
+             payment, incentive, gross_payment, debit_note, net_pay,
+             advance, tds, bank_transfer, ctc, pay_type, petrol,
+             parcel_count, per_parcel_cost, average, diff,
+             pan_card, user_type, cluster_manager, pnl_use,
+             remarks, state, tally_ledger, cost_centre)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [month, r.staff_id, r.store_name, r.station_code, r.head, r.name,
+           r.associate_id, r.present_days, r.week_off, r.total_days,
+           r.delivery||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.seller_returns||0, r.total_parcels||0,
+           r.payment||0, r.incentive||0, r.gross_payment||0, r.debit_note||0, r.net_pay||0,
+           r.advance||0, r.tds||0, r.bank_transfer||0, r.ctc, r.pay_type, r.petrol,
+           r.parcel_count||0, r.per_parcel_cost, r.average, r.diff,
+           r.pan_card, r.user_type, r.cluster_manager, r.pnl_use,
+           r.remarks, r.state, r.tally_ledger, r.cost_centre]
+        );
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped, month});
+  } catch(e) {
+    await conn.rollback();
+    res.status(500).json({error:e.message});
+  } finally { conn.release(); }
+});
+
+// ── Payroll history months list ───────────────────────────────────────────────
+app.get('/api/admin/payroll-history-months', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT payroll_month, COUNT(*) AS staff_count,
+             SUM(net_pay) AS total_net_pay,
+             SUM(bank_transfer) AS total_bank_transfer,
+             SUM(tds) AS total_tds
+      FROM payroll_history
+      GROUP BY payroll_month
+      ORDER BY STR_TO_DATE(CONCAT('01-', payroll_month), '%d-%b-%Y') DESC`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Petrol expenses endpoints ────────────────────────────────────────────────
+app.post('/api/admin/upload-petrol', async (req, res) => {
+  const { rows, upload_date, upload_batch, filename, replace } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data'});
+  if (!upload_batch) return res.status(400).json({error:'upload_batch required'});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (replace) await conn.execute('DELETE FROM petrol_expenses WHERE upload_batch=?', [upload_batch]);
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`INSERT IGNORE INTO petrol_expenses
+          (period_label,period_from,period_to,upload_batch,upload_date,filename,
+           station_code,store_name,staff_id,name,associate_id,
+           delivered,pickup,swa,smd,mfn,seller_return,total_parcels,total_km,per_km_rate,
+           total_petrol_rs,advance_petrol,total_bank_transfer,per_parcel_cost,average,
+           account_number,ifsc_code,cm,user_type,remarks,tally_ledger,cost_centre)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [r.period_label||null, r.period_from||null, r.period_to||null,
+           upload_batch, upload_date||null, filename||null,
+           r.station_code||null, r.store_name||null, r.staff_id||null,
+           r.name||null, r.associate_id||null,
+           r.delivered||0, r.pickup||0, r.swa||0, r.smd||0, r.mfn||0, r.seller_return||0,
+           r.total_parcels||0, r.total_km||0, r.per_km_rate||null,
+           r.total_petrol_rs||0, r.advance_petrol||0, r.total_bank_transfer||0,
+           r.per_parcel_cost||null, r.average||null,
+           r.account_number||null, r.ifsc_code||null, r.cm||null,
+           r.user_type||null, r.remarks||null, r.tally_ledger||null, r.cost_centre||null]);
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped, upload_batch});
+  } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
+  finally { conn.release(); }
+});
+
+app.get('/api/admin/petrol-check', async (req, res) => {
+  const { batch } = req.query;
+  if (!batch) return res.status(400).json({error:'batch required'});
+  try {
+    const [r] = await pool.execute('SELECT COUNT(*) AS cnt FROM petrol_expenses WHERE upload_batch=?', [batch]);
+    res.json({exists: r[0].cnt > 0, count: r[0].cnt});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/petrol-periods', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT upload_batch, upload_date, filename,
+             MIN(period_from) AS period_from, MAX(period_to) AS period_to,
+             COUNT(*) AS staff_count,
+             SUM(total_petrol_rs) AS total_petrol,
+             SUM(total_bank_transfer) AS total_bank,
+             SUM(total_km) AS total_km
+      FROM petrol_expenses
+      GROUP BY upload_batch, upload_date, filename
+      ORDER BY upload_date DESC, upload_batch DESC`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Period update endpoints for all sections ─────────────────────────────────
+
+// EDSP payroll month update
+app.patch('/api/admin/payroll-history-period', async (req, res) => {
+  const { old_month, new_month } = req.body || {};
+  if (!old_month || !new_month) return res.status(400).json({error:'old_month and new_month required'});
+  try {
+    const [r] = await pool.execute('UPDATE payroll_history SET payroll_month=? WHERE payroll_month=?', [new_month, old_month]);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// DSP payroll month update
+app.patch('/api/admin/dsp-payroll-period', async (req, res) => {
+  const { old_month, new_month, station_code, cycle } = req.body || {};
+  if (!old_month || !new_month) return res.status(400).json({error:'old_month and new_month required'});
+  try {
+    let sql = 'UPDATE dsp_payroll_history SET payment_month=? WHERE payment_month=?';
+    const p = [new_month, old_month];
+    if (station_code) { sql += ' AND station_code=?'; p.push(station_code); }
+    if (cycle) { sql += ' AND cycle=?'; p.push(parseInt(cycle)); }
+    const [r] = await pool.execute(sql, p);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// KMS/EDSP period label update
+app.patch('/api/admin/historical-edsp-period', async (req, res) => {
+  const { old_period, new_period } = req.body || {};
+  if (!old_period || !new_period) return res.status(400).json({error:'old_period and new_period required'});
+  try {
+    const [r] = await pool.execute('UPDATE log_amx_history SET period_label=? WHERE period_label=?', [new_period, old_period]);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Rent payment month update
+app.patch('/api/admin/rent-history-period', async (req, res) => {
+  const { old_month, new_month } = req.body || {};
+  if (!old_month || !new_month) return res.status(400).json({error:'old_month and new_month required'});
+  try {
+    const [r] = await pool.execute('UPDATE rent_history SET payment_month=? WHERE payment_month=?', [new_month, old_month]);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Additional payments month update
+app.patch('/api/admin/addl-payments-period', async (req, res) => {
+  const { old_month, new_month } = req.body || {};
+  if (!old_month || !new_month) return res.status(400).json({error:'old_month and new_month required'});
+  try {
+    const [r] = await pool.execute('UPDATE additional_payments_history SET payment_month=? WHERE payment_month=?', [new_month, old_month]);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Bank file date update
+app.patch('/api/admin/bank-payment-period', async (req, res) => {
+  const { batch, new_date } = req.body || {};
+  if (!batch || !new_date) return res.status(400).json({error:'batch and new_date required'});
+  try {
+    const [r] = await pool.execute('UPDATE bank_payments SET file_date=? WHERE upload_batch=?', [new_date, batch]);
+    res.json({ok:true, updated: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.patch('/api/admin/petrol-period/:batch', async (req, res) => {
+  const { period_from, period_to } = req.body || {};
+  try {
+    await pool.execute(
+      'UPDATE petrol_expenses SET period_from=?, period_to=? WHERE upload_batch=?',
+      [period_from||null, period_to||null, req.params.batch]);
+    res.json({ok:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/petrol-detail', async (req, res) => {
+  const { batch } = req.query;
+  if (!batch) return res.status(400).json({error:'batch required'});
+  try {
+    const [r] = await pool.execute(
+      'SELECT * FROM petrol_expenses WHERE upload_batch=? ORDER BY station_code, name', [batch]);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.delete('/api/admin/petrol/:batch', async (req, res) => {
+  try {
+    const batch = decodeURIComponent(req.params.batch);
+    let r;
+    if (batch === '__null__' || batch === '--') {
+      // Delete rows with null upload_batch (pre-migration rows)
+      [r] = await pool.execute('DELETE FROM petrol_expenses WHERE upload_batch IS NULL');
+    } else {
+      [r] = await pool.execute('DELETE FROM petrol_expenses WHERE upload_batch=?', [batch]);
+    }
+    res.json({ok:true, deleted: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Bank payments endpoints ──────────────────────────────────────────────────
+app.post('/api/admin/upload-bank-payments', async (req, res) => {
+  const { rows, file_date, batch_id } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data'});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`INSERT IGNORE INTO bank_payments
+          (payment_date,file_date,payment_category,pymt_prod_type,pymt_mode,debit_acc_no,
+           bnf_name,bene_acc_no,bene_ifsc,amount,debit_narr,credit_narr,
+           mobile_num,email_id,remark,ref_no,addl_info1,addl_info2,addl_info3,addl_info4,addl_info5,upload_batch)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [r.payment_date||null, file_date||null, r.payment_category||null,
+           r.pymt_prod_type||null, r.pymt_mode||null, r.debit_acc_no||null,
+           r.bnf_name||null, r.bene_acc_no||null, r.bene_ifsc||null,
+           r.amount||0, r.debit_narr||null, r.credit_narr||null,
+           r.mobile_num||null, r.email_id||null, r.remark||null, r.ref_no||null,
+           r.addl_info1||null, r.addl_info2||null, r.addl_info3||null,
+           r.addl_info4||null, r.addl_info5||null, batch_id||null]);
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped});
+  } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
+  finally { conn.release(); }
+});
+
+app.get('/api/admin/bank-payment-batches', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT
+        file_date, upload_batch,
+        MIN(payment_date) AS min_date, MAX(payment_date) AS max_date,
+        COUNT(*) AS row_count, SUM(amount) AS total_amount,
+        GROUP_CONCAT(DISTINCT payment_category ORDER BY payment_category SEPARATOR ', ') AS categories
+      FROM bank_payments
+      GROUP BY file_date, upload_batch
+      ORDER BY min_date DESC, file_date DESC`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/bank-payment-detail', async (req, res) => {
+  const { batch } = req.query;
+  if (!batch) return res.status(400).json({error:'batch required'});
+  try {
+    const [r] = await pool.execute(
+      'SELECT * FROM bank_payments WHERE upload_batch=? ORDER BY payment_date, bnf_name',
+      [batch]);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.delete('/api/admin/bank-payment-batch/:batch', async (req, res) => {
+  try {
+    const [r] = await pool.execute(
+      'DELETE FROM bank_payments WHERE upload_batch=?', [req.params.batch]);
+    res.json({ok:true, deleted: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── DSP payroll history endpoints ────────────────────────────────────────────
+app.get('/api/admin/dsp-payroll-check', async (req, res) => {
+  const { month, station } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    let sql = 'SELECT COUNT(*) AS cnt FROM dsp_payroll_history WHERE payment_month=?';
+    const p = [month];
+    if (station) { sql += ' AND station_code=?'; p.push(station); }
+    const [r] = await pool.execute(sql, p);
+    res.json({exists: r[0].cnt > 0, count: r[0].cnt});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/admin/upload-dsp-payroll', async (req, res) => {
+  const { rows, month, station_code, cycle, replace } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data received'});
+  if (!month) return res.status(400).json({error:'month required'});
+  const cycleNum = parseInt(cycle) || 1;
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Replace only this station+cycle combination, preserving other cycles/stations
+    if (replace && station_code) {
+      await conn.execute(
+        'DELETE FROM dsp_payroll_history WHERE payment_month=? AND station_code=? AND cycle=?',
+        [month, station_code, cycleNum]);
+    }
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`INSERT IGNORE INTO dsp_payroll_history
+          (payment_month,station_code,staff_id,name,vehicle_type,cycle,present_days,
+           block_a,block_b,block_c,block_d,block_z,
+           delivery,c_return,buy_back,total_parcels,per_parcel_rate,total_parcel_amt,
+           payment,incentive,gross_payment,debit_note,net_pay,advance,tds,bank_transfer,
+           pan_card,ifsc_code,account_number,tally_ledger,cost_centre,remarks)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [month, r.station_code, r.staff_id, r.name, r.vehicle_type, cycleNum,
+           r.present_days||null,
+           r.block_a||0, r.block_b||0, r.block_c||0, r.block_d||0, r.block_z||0,
+           r.delivery||0, r.c_return||0, r.buy_back||0, r.total_parcels||0,
+           r.per_parcel_rate||null, r.total_parcel_amt||0,
+           r.payment||0, r.incentive||0, r.gross_payment||0, r.debit_note||0,
+           r.net_pay||0, r.advance||0, r.tds||0, r.bank_transfer||0,
+           r.pan_card||null, r.ifsc_code||null, r.account_number||null,
+           r.tally_ledger||null, r.cost_centre||null, r.remarks||null]);
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped, month, cycle: cycleNum});
+  } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
+  finally { conn.release(); }
+});
+
+app.get('/api/admin/dsp-payroll-months', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT payment_month, station_code, cycle,
+             COUNT(*) AS staff_count,
+             SUM(net_pay) AS total_net_pay,
+             SUM(bank_transfer) AS total_bank_transfer,
+             SUM(tds) AS total_tds
+      FROM dsp_payroll_history
+      GROUP BY payment_month, station_code, cycle
+      ORDER BY STR_TO_DATE(CONCAT('01-',payment_month),'%d-%b-%Y') DESC, station_code, cycle`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.delete('/api/admin/dsp-payroll/:month/:station/:cycle', async (req, res) => {
+  try {
+    const [r] = await pool.execute(
+      'DELETE FROM dsp_payroll_history WHERE payment_month=? AND station_code=? AND cycle=?',
+      [req.params.month, req.params.station, parseInt(req.params.cycle)||1]);
+    res.json({ok:true, rows_deleted: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Rent history endpoints ───────────────────────────────────────────────────
+app.get('/api/admin/rent-history-check', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('SELECT COUNT(*) AS cnt FROM rent_history WHERE payment_month=?', [month]);
+    res.json({exists: r[0].cnt > 0, count: r[0].cnt});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/admin/upload-rent-history', async (req, res) => {
+  const { rows, month, replace } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data received'});
+  if (!month) return res.status(400).json({error:'month required'});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (replace) await conn.execute('DELETE FROM rent_history WHERE payment_month=?', [month]);
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`INSERT INTO rent_history
+          (payment_month,station_code,station_name,inv_number,rent_amount,gst,total_rent,
+           tds,payable_amount,shop_owner_name,account_number,ifsc_code,pan_card_number,
+           pan_card_name,bank_remarks,remarks,remarks2,property_type,tally_ledger,cost_centre,cm)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [month,r.station_code,r.station_name,r.inv_number,r.rent_amount,r.gst,r.total_rent,
+           r.tds,r.payable_amount,r.shop_owner_name,r.account_number,r.ifsc_code,r.pan_card_number,
+           r.pan_card_name,r.bank_remarks,r.remarks,r.remarks2,r.property_type,r.tally_ledger,r.cost_centre,r.cm]);
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped, month});
+  } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
+  finally { conn.release(); }
+});
+
+app.get('/api/admin/rent-history-months', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT payment_month, COUNT(*) AS station_count,
+             SUM(payable_amount) AS total_payable, SUM(tds) AS total_tds
+      FROM rent_history GROUP BY payment_month ORDER BY payment_month DESC`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.delete('/api/admin/rent-history/:month', async (req, res) => {
+  try {
+    const [r] = await pool.execute('DELETE FROM rent_history WHERE payment_month=?', [req.params.month]);
+    res.json({ok:true, rows_deleted: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Additional payments history endpoints ─────────────────────────────────────
+app.get('/api/admin/addl-payments-check', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('SELECT COUNT(*) AS cnt FROM additional_payments_history WHERE payment_month=?', [month]);
+    res.json({exists: r[0].cnt > 0, count: r[0].cnt});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/admin/upload-addl-payments', async (req, res) => {
+  const { rows, month, replace } = req.body || {};
+  if (!rows || !rows.length) return res.status(400).json({error:'No data received'});
+  if (!month) return res.status(400).json({error:'month required'});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (replace) await conn.execute('DELETE FROM additional_payments_history WHERE payment_month=?', [month]);
+    let inserted = 0, skipped = 0;
+    for (const r of rows) {
+      try {
+        await conn.execute(`INSERT INTO additional_payments_history
+          (payment_month,sr_no,payment_date,station_code,payment_head,company_name,
+           employee_id,name,billing_month,inv_number,inv_taxable_amt,gst,total_inv_amt,
+           tds_rate,tds,actual_amt,advance_debit,bank_transfer,pan_card,ifsc_code,
+           account_number,account_name,remarks,naisad_remarks,tally_ledger,cost_centre)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [month,r.sr_no,r.payment_date,r.station_code,r.payment_head,r.company_name,
+           r.employee_id,r.name,r.billing_month,r.inv_number,r.inv_taxable_amt,r.gst,r.total_inv_amt,
+           r.tds_rate,r.tds,r.actual_amt,r.advance_debit,r.bank_transfer,r.pan_card,r.ifsc_code,
+           r.account_number,r.account_name,r.remarks,r.naisad_remarks,r.tally_ledger,r.cost_centre]);
+        inserted++;
+      } catch(e) { skipped++; }
+    }
+    await conn.commit();
+    res.json({ok:true, inserted, skipped, month});
+  } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
+  finally { conn.release(); }
+});
+
+app.get('/api/admin/addl-payments-months', async (req, res) => {
+  try {
+    const [r] = await pool.execute(`
+      SELECT payment_month, COUNT(*) AS entry_count,
+             SUM(bank_transfer) AS total_bank_transfer, SUM(tds) AS total_tds
+      FROM additional_payments_history GROUP BY payment_month ORDER BY payment_month DESC`);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.delete('/api/admin/addl-payments/:month', async (req, res) => {
+  try {
+    const [r] = await pool.execute('DELETE FROM additional_payments_history WHERE payment_month=?', [req.params.month]);
+    res.json({ok:true, rows_deleted: r.affectedRows});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Detail endpoints for Review modal ────────────────────────────────────────
+app.get('/api/admin/payroll-history-detail', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('SELECT * FROM payroll_history WHERE payroll_month=? ORDER BY station_code, name', [month]);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/dsp-payroll-detail', async (req, res) => {
+  const { month, station, cycle } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    let sql = 'SELECT * FROM dsp_payroll_history WHERE payment_month=?';
+    const p = [month];
+    if (station) { sql += ' AND station_code=?'; p.push(station); }
+    if (cycle)   { sql += ' AND cycle=?'; p.push(parseInt(cycle)); }
+    sql += ' ORDER BY station_code, name';
+    const [r] = await pool.execute(sql, p);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/rent-history-detail', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('SELECT * FROM rent_history WHERE payment_month=? ORDER BY station_code', [month]);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/admin/addl-payments-detail', async (req, res) => {
+  const { month } = req.query;
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('SELECT * FROM additional_payments_history WHERE payment_month=? ORDER BY station_code, sr_no', [month]);
+    res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Rollup: merge -a and -b into base month label ────────────────────────────
+app.post('/api/admin/edsp-rollup', async (req, res) => {
+  const { month } = req.body; // e.g. "feb-2026"
+  if (!month) return res.status(400).json({error:'month required'});
+  const labelA = month + '-a';
+  const labelB = month + '-b';
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Update log_amx
+    await conn.execute('UPDATE log_amx SET period_label=? WHERE period_label IN (?,?)', [month, labelA, labelB]);
+    // Update edsp_cycles labels
+    await conn.execute('UPDATE edsp_cycles SET cycle_label=? WHERE cycle_label=?', [month, labelA]);
+    await conn.execute('DELETE FROM edsp_cycles WHERE cycle_label=?', [labelB]);
+    // Update edsp_data via cycle_id join
+    const [cycA] = await conn.execute('SELECT id FROM edsp_cycles WHERE cycle_label=? LIMIT 1', [month]);
+    if (cycA.length) {
+      const [cycB] = await conn.execute('SELECT id FROM edsp_cycles WHERE cycle_label=? LIMIT 1', [labelB]);
+      if (cycB.length) {
+        await conn.execute('UPDATE edsp_data SET cycle_id=? WHERE cycle_id=?', [cycA[0].id, cycB[0].id]);
+        await conn.execute('DELETE FROM edsp_cycles WHERE id=?', [cycB[0].id]);
+      }
+    }
+    await conn.commit();
+    res.json({ok:true, rolled_up_to: month});
+  } catch(e) {
+    await conn.rollback();
+    res.status(500).json({error:e.message});
+  } finally { conn.release(); }
+});
+
+// ── All periods summary ──────────────────────────────────────────────────────
+app.get('/api/admin/edsp-all-periods', async (req, res) => {
+  try {
+    const [live] = await pool.execute(`
+      SELECT period_label, 'live' AS source,
+             COUNT(*) AS total_rows,
+             COUNT(DISTINCT station_code) AS stations,
+             COUNT(DISTINCT amx_id) AS ics,
+             MIN(delivery_date) AS date_from,
+             MAX(delivery_date) AS date_to,
+             SUM(delivered) AS total_delivered,
+             SUM(pickup) AS total_pickup
+      FROM log_amx
+      GROUP BY period_label
+      ORDER BY MIN(delivery_date) DESC`);
+    const [hist] = await pool.execute(`
+      SELECT period_label, 'historical' AS source,
+             COUNT(*) AS total_rows,
+             COUNT(DISTINCT station_code) AS stations,
+             COUNT(DISTINCT amx_id) AS ics,
+             MIN(delivery_date) AS date_from,
+             MAX(delivery_date) AS date_to,
+             SUM(delivered) AS total_delivered,
+             SUM(pickup) AS total_pickup
+      FROM log_amx_history
+      GROUP BY period_label
+      ORDER BY MIN(delivery_date) DESC`);
+    const rows = [...live, ...hist].sort((a,b) => b.date_from > a.date_from ? 1 : -1);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Historical EDSP detail (for review modal) ────────────────────────────────
+app.get('/api/admin/historical-edsp-detail', async (req, res) => {
+  const { period, station } = req.query;
+  if (!period) return res.status(400).json({error:'period required'});
+  let sql = `SELECT station_code, amx_id, ic_name, delivery_date, parcel_type,
+                    delivered, pickup, swa, smd, mfn, returns, kms
+             FROM log_amx_history WHERE period_label=?`;
+  const p = [period];
+  if (station) { sql += ' AND station_code=?'; p.push(station); }
+  sql += ' ORDER BY station_code, delivery_date, amx_id, parcel_type';
+  try {
+    const [rows] = await pool.execute(sql, p);
+    const stations = [...new Set(rows.map(r=>r.station_code))].sort();
+    res.json({rows, stations});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
@@ -796,15 +1388,8 @@ app.delete('/api/admin/historical-edsp/:period', async (req, res) => {
   const period = req.params.period;
   if (!period) return res.status(400).json({error:'period required'});
   try {
-    const [la] = await pool.execute('DELETE FROM log_amx WHERE period_label=?', [period]);
-    const [cyc] = await pool.execute('SELECT id FROM edsp_cycles WHERE cycle_label=?', [period]);
-    let edspDel = 0;
-    if (cyc.length) {
-      const [ed] = await pool.execute('DELETE FROM edsp_data WHERE cycle_id=?', [cyc[0].id]);
-      edspDel = ed.affectedRows;
-      await pool.execute('DELETE FROM edsp_cycles WHERE cycle_label=?', [period]);
-    }
-    res.json({ok:true, log_amx_deleted: la.affectedRows, edsp_data_deleted: edspDel});
+    const [la] = await pool.execute('DELETE FROM log_amx_history WHERE period_label=?', [period]);
+    res.json({ok:true, rows_deleted: la.affectedRows});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
@@ -1863,6 +2448,285 @@ app.get('/api/legacy/leaves', async (req, res) => {
   await addCol("ALTER TABLE debit_responses ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
   await addCol("ALTER TABLE log_advances ADD COLUMN verified_by VARCHAR(100) DEFAULT NULL");
 
+  // ── log_amx_history table (historical EDSP — never touches live WH tables) ──
+  await pool.execute(`CREATE TABLE IF NOT EXISTS log_amx_history (
+    id             INT AUTO_INCREMENT PRIMARY KEY,
+    station_code   VARCHAR(20),
+    amx_id         VARCHAR(150),
+    ic_id          INT,
+    ic_name        VARCHAR(100),
+    delivery_date  DATE,
+    period_label   VARCHAR(30),
+    kms            DECIMAL(8,2) DEFAULT 0,
+    parcel_type    VARCHAR(30),
+    delivered      INT DEFAULT 0,
+    pickup         INT DEFAULT 0,
+    swa            INT DEFAULT 0,
+    smd            INT DEFAULT 0,
+    mfn            INT DEFAULT 0,
+    returns        INT DEFAULT 0,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_amx_hist (station_code,amx_id,delivery_date,parcel_type,period_label)
+  )`);
+
+  // ── petrol_expenses table ────────────────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS petrol_expenses (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    period_label        VARCHAR(60),
+    upload_batch        VARCHAR(100) NOT NULL,
+    upload_date         DATE,
+    filename            VARCHAR(200),
+    period_from         DATE,
+    period_to           DATE,
+    station_code        VARCHAR(20),
+    store_name          VARCHAR(100),
+    staff_id            INT,
+    name                VARCHAR(100),
+    associate_id        VARCHAR(150),
+    delivered           INT DEFAULT 0,
+    pickup              INT DEFAULT 0,
+    swa                 INT DEFAULT 0,
+    smd                 INT DEFAULT 0,
+    mfn                 INT DEFAULT 0,
+    seller_return       INT DEFAULT 0,
+    total_parcels       INT DEFAULT 0,
+    total_km            DECIMAL(10,2) DEFAULT 0,
+    per_km_rate         DECIMAL(8,2),
+    total_petrol_rs     DECIMAL(10,2) DEFAULT 0,
+    advance_petrol      DECIMAL(10,2) DEFAULT 0,
+    total_bank_transfer DECIMAL(10,2) DEFAULT 0,
+    per_parcel_cost     DECIMAL(10,4),
+    average             DECIMAL(10,4),
+    account_number      VARCHAR(40),
+    ifsc_code           VARCHAR(20),
+    cm                  VARCHAR(100),
+    user_type           VARCHAR(50),
+    remarks             VARCHAR(255),
+    tally_ledger        VARCHAR(150),
+    cost_centre         VARCHAR(50),
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_petrol (upload_batch, station_code, staff_id)
+  )`);
+
+  // ── petrol_expenses migrations (add columns if table already existed) ──────────
+  try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN upload_batch VARCHAR(100)"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN upload_date DATE"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN filename VARCHAR(200)"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE petrol_expenses MODIFY COLUMN period_label VARCHAR(60)"); } catch(e) {}
+  // Update unique key to use upload_batch instead of period_label
+  try { await pool.execute("ALTER TABLE petrol_expenses DROP INDEX uq_petrol"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE petrol_expenses ADD UNIQUE KEY uq_petrol (upload_batch, station_code, staff_id)"); } catch(e) {}
+
+  // ── bank_payments table ──────────────────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS bank_payments (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    payment_date      DATE NOT NULL,
+    file_date         VARCHAR(20),
+    payment_category  VARCHAR(50),
+    pymt_prod_type    VARCHAR(20),
+    pymt_mode         VARCHAR(20),
+    debit_acc_no      VARCHAR(30),
+    bnf_name          VARCHAR(100),
+    bene_acc_no       VARCHAR(40),
+    bene_ifsc         VARCHAR(20),
+    amount            DECIMAL(12,2),
+    debit_narr        VARCHAR(200),
+    credit_narr       VARCHAR(200),
+    mobile_num        VARCHAR(20),
+    email_id          VARCHAR(100),
+    remark            VARCHAR(200),
+    ref_no            VARCHAR(100),
+    addl_info1        VARCHAR(200),
+    addl_info2        VARCHAR(200),
+    addl_info3        VARCHAR(200),
+    addl_info4        VARCHAR(200),
+    addl_info5        VARCHAR(200),
+    upload_batch      VARCHAR(50),
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_bank_payment (payment_date, bene_acc_no, amount, debit_narr)
+  )`);
+
+  // ── dsp_payroll_history table ───────────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS dsp_payroll_history (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    payment_month    VARCHAR(20) NOT NULL,
+    station_code     VARCHAR(20) NOT NULL,
+    staff_id         INT,
+    name             VARCHAR(100),
+    vehicle_type     VARCHAR(20),
+    present_days     DECIMAL(5,1),
+    block_a          DECIMAL(8,2) DEFAULT 0,
+    block_b          DECIMAL(8,2) DEFAULT 0,
+    block_c          DECIMAL(8,2) DEFAULT 0,
+    block_d          DECIMAL(8,2) DEFAULT 0,
+    block_z          DECIMAL(8,2) DEFAULT 0,
+    delivery         INT DEFAULT 0,
+    c_return         INT DEFAULT 0,
+    buy_back         INT DEFAULT 0,
+    total_parcels    INT DEFAULT 0,
+    per_parcel_rate  DECIMAL(8,2),
+    total_parcel_amt DECIMAL(10,2) DEFAULT 0,
+    payment          DECIMAL(10,2) DEFAULT 0,
+    incentive        DECIMAL(10,2) DEFAULT 0,
+    gross_payment    DECIMAL(10,2) DEFAULT 0,
+    debit_note       DECIMAL(10,2) DEFAULT 0,
+    net_pay          DECIMAL(10,2) DEFAULT 0,
+    advance          DECIMAL(10,2) DEFAULT 0,
+    tds              DECIMAL(10,2) DEFAULT 0,
+    bank_transfer    DECIMAL(10,2) DEFAULT 0,
+    pan_card         VARCHAR(20),
+    ifsc_code        VARCHAR(20),
+    account_number   VARCHAR(30),
+    tally_ledger     VARCHAR(150),
+    cost_centre      VARCHAR(50),
+    remarks          VARCHAR(255),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    cycle            TINYINT DEFAULT 1,
+    UNIQUE KEY uq_dsp_payroll (staff_id, station_code, payment_month, vehicle_type, cycle)
+  )`);
+  // Add cycle column if table already exists without it
+  try { await pool.execute('ALTER TABLE dsp_payroll_history ADD COLUMN cycle TINYINT DEFAULT 1'); } catch(e) {}
+  try { await pool.execute('ALTER TABLE dsp_payroll_history DROP INDEX uq_dsp_payroll'); } catch(e) {}
+  try { await pool.execute('ALTER TABLE dsp_payroll_history ADD UNIQUE KEY uq_dsp_payroll (staff_id, station_code, payment_month, vehicle_type, cycle)'); } catch(e) {}
+
+  // ── rent_history table ───────────────────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS rent_history (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    payment_month    VARCHAR(20) NOT NULL,
+    station_code     VARCHAR(20),
+    station_name     VARCHAR(100),
+    inv_number       VARCHAR(50),
+    rent_amount      DECIMAL(10,2),
+    gst              DECIMAL(10,2),
+    total_rent       DECIMAL(10,2),
+    tds              DECIMAL(10,2),
+    payable_amount   DECIMAL(10,2),
+    shop_owner_name  VARCHAR(150),
+    account_number   VARCHAR(30),
+    ifsc_code        VARCHAR(20),
+    pan_card_number  VARCHAR(20),
+    pan_card_name    VARCHAR(100),
+    bank_remarks     VARCHAR(150),
+    remarks          VARCHAR(255),
+    remarks2         VARCHAR(255),
+    property_type    VARCHAR(50),
+    tally_ledger     VARCHAR(150),
+    cost_centre      VARCHAR(50),
+    cm               VARCHAR(100),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_rent (station_code, payment_month)
+  )`);
+
+  // ── additional_payments_history table ─────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS additional_payments_history (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    payment_month    VARCHAR(20) NOT NULL,
+    sr_no            INT,
+    payment_date     DATE,
+    station_code     VARCHAR(20),
+    payment_head     VARCHAR(100),
+    company_name     VARCHAR(100),
+    employee_id      VARCHAR(20),
+    name             VARCHAR(100),
+    billing_month    VARCHAR(50),
+    inv_number       VARCHAR(50),
+    inv_taxable_amt  DECIMAL(10,2),
+    gst              DECIMAL(10,2),
+    total_inv_amt    DECIMAL(10,2),
+    tds_rate         DECIMAL(5,2),
+    tds              DECIMAL(10,2),
+    actual_amt       DECIMAL(10,2),
+    advance_debit    DECIMAL(10,2),
+    bank_transfer    DECIMAL(10,2),
+    pan_card         VARCHAR(20),
+    ifsc_code        VARCHAR(20),
+    account_number   VARCHAR(30),
+    account_name     VARCHAR(100),
+    remarks          VARCHAR(255),
+    naisad_remarks   VARCHAR(255),
+    tally_ledger     VARCHAR(150),
+    cost_centre      VARCHAR(50),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // ── Migrate any historical data from log_amx → log_amx_history ─────────────
+  try {
+    // Move rows with month-first labels (e.g. feb-2026, jan-2026-a) to history table
+    await pool.execute(`
+      INSERT IGNORE INTO log_amx_history
+        (station_code,amx_id,ic_id,ic_name,delivery_date,period_label,
+         kms,parcel_type,delivered,pickup,swa,smd,mfn,returns)
+      SELECT station_code,amx_id,ic_id,ic_name,delivery_date,period_label,
+             kms,parcel_type,delivered,pickup,swa,smd,mfn,returns
+      FROM log_amx
+      WHERE period_label REGEXP '^[a-z]+-[0-9]'`);
+    await pool.execute(`DELETE FROM log_amx WHERE period_label REGEXP '^[a-z]+-[0-9]'`);
+  } catch(e) { console.log('[migration] log_amx history move:', e.message); }
+
+  // ── payroll_history table ────────────────────────────────────────────────────
+  await pool.execute(`CREATE TABLE IF NOT EXISTS payroll_history (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    payroll_month    VARCHAR(20) NOT NULL,
+    staff_id         INT NOT NULL,
+    store_name       VARCHAR(100),
+    station_code     VARCHAR(20),
+    head             VARCHAR(20),
+    name             VARCHAR(100),
+    associate_id     VARCHAR(150),
+    present_days     DECIMAL(5,1),
+    week_off         DECIMAL(5,1),
+    total_days       DECIMAL(5,1),
+    delivery         INT DEFAULT 0,
+    pickup           INT DEFAULT 0,
+    swa              INT DEFAULT 0,
+    smd              INT DEFAULT 0,
+    mfn              INT DEFAULT 0,
+    seller_returns   INT DEFAULT 0,
+    total_parcels    INT DEFAULT 0,
+    payment          DECIMAL(10,2) DEFAULT 0,
+    incentive        DECIMAL(10,2) DEFAULT 0,
+    gross_payment    DECIMAL(10,2) DEFAULT 0,
+    debit_note       DECIMAL(10,2) DEFAULT 0,
+    net_pay          DECIMAL(10,2) DEFAULT 0,
+    advance          DECIMAL(10,2) DEFAULT 0,
+    tds              DECIMAL(10,2) DEFAULT 0,
+    bank_transfer    DECIMAL(10,2) DEFAULT 0,
+    ctc              DECIMAL(10,2),
+    pay_type         VARCHAR(20),
+    petrol           DECIMAL(10,2),
+    parcel_count     INT DEFAULT 0,
+    per_parcel_cost  DECIMAL(10,4),
+    average          DECIMAL(10,4),
+    diff             DECIMAL(10,4),
+    pan_card         VARCHAR(20),
+    user_type        VARCHAR(50),
+    cluster_manager  VARCHAR(100),
+    pnl_use          VARCHAR(100),
+    remarks          VARCHAR(255),
+    state            VARCHAR(50),
+    tally_ledger     VARCHAR(150),
+    cost_centre      VARCHAR(50),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_payroll (staff_id, payroll_month)
+  )`);
+
+  // ── station_type column ─────────────────────────────────────────────────────
+  try {
+    await pool.execute("ALTER TABLE stations ADD COLUMN station_type VARCHAR(10) NOT NULL DEFAULT 'EDSP'");
+  } catch(e) { /* already exists */ }
+  // Mark DSP stations
+  await pool.execute("UPDATE stations SET station_type='DSP' WHERE station_code IN ('GNNT','AMDE','BDQE')");
+  // Ensure all others are EDSP
+  await pool.execute("UPDATE stations SET station_type='EDSP' WHERE station_code NOT IN ('GNNT','AMDE','BDQE')");
+
+  // ── Unique keys for log_amx and edsp_data (safe to run multiple times) ──────
+  try {
+    await pool.execute(`ALTER TABLE log_amx ADD UNIQUE KEY uq_log_amx (station_code,amx_id,delivery_date,parcel_type,period_label)`);
+  } catch(e) { /* already exists */ }
+  try {
+    await pool.execute(`ALTER TABLE edsp_data ADD UNIQUE KEY uq_edsp_data (cycle_id,station_code,amx_id,delivery_date,parcel_type)`);
+  } catch(e) { /* already exists */ }
+
   // ── stations table ──────────────────────────────────────
   await pool.execute(`CREATE TABLE IF NOT EXISTS stations (
     id              INT AUTO_INCREMENT PRIMARY KEY,
@@ -1950,6 +2814,18 @@ app.get('/api/legacy/leaves', async (req, res) => {
 })().catch(e => console.error('Migration error:', e.message));
 
 
+// ── Stations by type (for payroll tab config) ────────────────────────────────
+app.get('/api/admin/stations-by-type', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT station_code, store_name, station_type
+       FROM stations WHERE is_delete=0
+       ORDER BY station_type, station_code`
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 // ── Payroll verify ───────────────────────────────────────
 app.post('/api/admin/payroll-verify', (req, res) => {
   const { password } = req.body;
@@ -1959,7 +2835,9 @@ app.post('/api/admin/payroll-verify', (req, res) => {
 
 // ── Payroll staff export ──────────────────────────────────
 app.get('/api/admin/payroll-staff', async (req, res) => {
-  const { station, user_type } = req.query;
+  const { station, user_type, month } = req.query;
+  // month e.g. "jan-2026" — used to join payroll_history + log_amx
+
   const roleMap = {
     1:'Admin', 2:'Station Incharge', 4:'Delivery Associate',
     5:'Cluster Manager', 6:'Store Admin', 7:'Account',
@@ -1968,33 +2846,184 @@ app.get('/api/admin/payroll-staff', async (req, res) => {
     17:'Assistance Cluster Manager', 18:'Process Associate',
     19:'SLPT Team Leader', 20:'Loader', 21:'CP Point'
   };
-  let sql = `
-    SELECT s.id, s.user_type, st.store_name, s.station_code,
-           CONCAT(TRIM(COALESCE(s.fname,'')), ' ', TRIM(COALESCE(s.lname,''))) AS full_name,
-           s.ctc, s.pan_card_number, s.ifsc_code, s.account_no,
-           CONCAT(TRIM(COALESCE(cm.fname,'')), ' ', TRIM(COALESCE(cm.lname,''))) AS cluster_manager
-    FROM staff s
-    LEFT JOIN stations st ON LOWER(st.station_code) = LOWER(s.station_code)
-    LEFT JOIN staff cm ON cm.id = st.primary_cluster_manager
-    WHERE s.status = 0 AND s.is_delete = 0`;
-  const p = [];
-  if (station)   { sql += ' AND LOWER(s.station_code)=LOWER(?)'; p.push(station); }
-  if (user_type) { sql += ' AND s.user_type=?'; p.push(user_type); }
-  sql += ' ORDER BY s.station_code, s.user_type, s.fname';
+
+  // Helper: actual days in month from label e.g. "jan-2026" → 31
+  const daysInMonth = (label) => {
+    if (!label) return 31;
+    const mnames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const parts = label.split('-');
+    const mi = mnames.indexOf(parts[0]);
+    const yr = parseInt(parts[1]) || new Date().getFullYear();
+    if (mi < 0) return 31;
+    return new Date(yr, mi + 1, 0).getDate();
+  };
+  const totalDaysInMonth = daysInMonth(month);
+
+  // Formulas (JS versions of Excel formulas)
+  const weekOff = (present) => {
+    const p = parseFloat(present) || 0;
+    if (p >= 27) return 4;
+    if (p >= 24) return 4;
+    if (p >= 18) return 3;
+    if (p >= 12) return 2;
+    if (p >= 6)  return 1;
+    return 0;
+  };
+  const roundUp = (n) => Math.ceil(n * 100) / 100;
+  const totalParcels = (d,pk,s,sm,mfn,sr) =>
+    Math.ceil((d+pk+s+sm) + (mfn+sr)/3);
+  const calcPayment = (payType, ctc, totalDays, parcels, daysInMon) => {
+    if (payType === 'Per Parcel') return ctc * parcels;
+    if (payType === 'Fix')        return roundUp((ctc / daysInMon) * totalDays);
+    if (payType === 'Per Day')    return ctc * totalDays;
+    return 0;
+  };
+
   try {
-    const [rows] = await pool.execute(sql, p);
-    res.json(rows.map(r => ({
-      store_name:      r.store_name || '',
-      station_code:    r.station_code || '',
-      id:              r.id,
-      full_name:       r.full_name.trim(),
-      ctc:             r.ctc || '',
-      pan_card_number: r.pan_card_number || '',
-      user_type:       roleMap[r.user_type] || ('Type ' + r.user_type),
-      cluster_manager: r.cluster_manager.trim(),
-      ifsc_code:       r.ifsc_code || '',
-      account_no:      r.account_no || ''
-    })));
+    let staffSql = `
+      SELECT s.id, s.user_type, st.store_name, s.station_code,
+             TRIM(CONCAT(COALESCE(s.fname,''),' ',COALESCE(s.lname,''))) AS full_name,
+             s.ctc, s.pan_card_number, s.ifsc_code, s.account_no, s.per_parcel,
+             TRIM(CONCAT(COALESCE(cm.fname,''),' ',COALESCE(cm.lname,''))) AS cluster_manager
+      FROM staff s
+      LEFT JOIN stations st ON LOWER(st.station_code)=LOWER(s.station_code)
+      LEFT JOIN staff cm ON cm.id=st.primary_cluster_manager
+      WHERE s.status=0 AND s.is_delete=0`;
+    const p = [];
+    if (station)   { staffSql += ' AND LOWER(s.station_code)=LOWER(?)'; p.push(station); }
+    if (user_type) { staffSql += ' AND s.user_type=?'; p.push(user_type); }
+    staffSql += ' ORDER BY s.station_code, s.user_type, s.fname';
+
+    const [staffRows] = await pool.execute(staffSql, p);
+
+    // Build lookup maps for the selected month
+    let phMap = {}, edspMap = {}, debitMap = {}, advMap = {};
+
+    if (month) {
+      // payroll_history for this month
+      const [ph] = await pool.execute(
+        'SELECT * FROM payroll_history WHERE payroll_month=?', [month]);
+      ph.forEach(r => phMap[r.staff_id] = r);
+
+      // EDSP/log_amx — match period labels that belong to this month
+      // e.g. jan-2026 matches jan-2026, jan-2026-a, jan-2026-b
+      const mbase = month.replace(/-[ab]$/, '');
+      const [edsp] = await pool.execute(`
+        SELECT ic_id,
+               COUNT(DISTINCT delivery_date) AS present_days,
+               SUM(delivered)      AS delivery,
+               SUM(pickup)         AS pickup,
+               SUM(swa)            AS swa,
+               SUM(smd)            AS smd,
+               SUM(mfn)            AS mfn,
+               SUM(returns)        AS seller_returns
+        FROM log_amx
+        WHERE (period_label=? OR period_label=? OR period_label=?)
+          AND ic_id IS NOT NULL
+        GROUP BY ic_id`,
+        [mbase, mbase+'-a', mbase+'-b']);
+      edsp.forEach(r => edspMap[r.ic_id] = r);
+
+      // Debit notes for this month from debit_data
+      const [deb] = await pool.execute(`
+        SELECT station_code, SUM(amount) AS total_debit
+        FROM debit_data
+        WHERE period_label LIKE ?
+        GROUP BY station_code`,
+        [mbase + '%']);
+      deb.forEach(r => debitMap[r.station_code] = parseFloat(r.total_debit)||0);
+
+      // Advances — approved for this month
+      const [adv] = await pool.execute(`
+        SELECT ic_id, SUM(amount) AS total_advance
+        FROM advance_requests
+        WHERE status='approved'
+          AND DATE_FORMAT(created_at, '%b-%Y') LIKE ?
+        GROUP BY ic_id`,
+        [month.split('-')[0].charAt(0).toUpperCase() + month.split('-')[0].slice(1) + '-' + month.split('-')[1]]);
+      adv.forEach(r => advMap[r.ic_id] = parseFloat(r.total_advance)||0);
+    }
+
+    const result = staffRows.map(s => {
+      const ph   = phMap[s.id]   || {};
+      const edsp = edspMap[s.id] || {};
+
+      // Base counts — prefer EDSP data, fall back to payroll_history
+      const present      = parseFloat(edsp.present_days || ph.present_days || 0);
+      const wOff         = weekOff(present);
+      const totalDays    = present + wOff;
+      const delivery     = parseInt(edsp.delivery     || ph.delivery     || 0);
+      const pickup       = parseInt(edsp.pickup       || ph.pickup       || 0);
+      const swa          = parseInt(edsp.swa          || ph.swa          || 0);
+      const smd          = parseInt(edsp.smd          || ph.smd          || 0);
+      const mfn          = parseInt(edsp.mfn          || ph.mfn          || 0);
+      const sellerRet    = parseInt(edsp.seller_returns || ph.seller_returns || 0);
+      const parcels      = totalParcels(delivery, pickup, swa, smd, mfn, sellerRet);
+      const parcelWeighted = Math.ceil(delivery + pickup + swa + smd + (mfn + sellerRet)/3);
+
+      // Pay details — prefer payroll_history, fall back to staff table
+      const payType      = ph.pay_type  || 'Per Parcel';
+      const ctc          = parseFloat(ph.ctc || s.ctc || 0);
+      const incentive    = parseFloat(ph.incentive  || 0);
+      const debitNote    = parseFloat(ph.debit_note || debitMap[s.station_code] || 0);
+      const advance      = parseFloat(ph.advance    || advMap[s.id] || 0);
+      const petrol       = parseFloat(ph.petrol     || 0);
+
+      // Calculated
+      const payment      = calcPayment(payType, ctc, totalDays, parcels, totalDaysInMonth);
+      const grossPayment = Math.ceil(payment + incentive);
+      const netPay       = grossPayment - debitNote;
+      const tds          = Math.ceil(netPay * 0.01);
+      const bankTransfer = netPay - (advance + tds);
+      const perParcelCost = parcelWeighted > 0 ? (grossPayment + petrol) / parcelWeighted : 0;
+      const average      = parseFloat(ph.average || perParcelCost);
+      const diff         = average - ctc;
+
+      return {
+        store_name:       s.store_name || '',
+        station_code:     s.station_code || '',
+        id:               s.id,
+        head:             ph.head || '',
+        full_name:        s.full_name,
+        associate_id:     ph.associate_id || '',
+        present_days:     present,
+        week_off:         wOff,
+        total_days:       totalDays,
+        delivery, pickup, swa, smd, mfn,
+        seller_returns:   sellerRet,
+        total_parcels:    parcels,
+        payment:          Math.round(payment * 100) / 100,
+        incentive,
+        gross_payment:    grossPayment,
+        debit_note:       debitNote,
+        net_pay:          netPay,
+        advance,
+        tds,
+        bank_transfer:    bankTransfer,
+        ctc,
+        pay_type:         payType,
+        petrol,
+        parcel_count:     parcelWeighted,
+        per_parcel_cost:  Math.round(perParcelCost * 10000) / 10000,
+        average:          Math.round(average * 10000) / 10000,
+        diff:             Math.round(diff * 10000) / 10000,
+        pan_card:         s.pan_card_number || ph.pan_card || '',
+        user_type:        roleMap[s.user_type] || ('Type ' + s.user_type),
+        cluster_manager:  s.cluster_manager,
+        pnl_use:          ph.pnl_use || '',
+        remarks:          ph.remarks || '',
+        state:            ph.state || '',
+        tally_ledger:     ph.tally_ledger || '',
+        cost_centre:      ph.cost_centre || '',
+        ifsc_code:        s.ifsc_code || '',
+        account_no:       s.account_no || '',
+        // Source flags for UI
+        _has_edsp:        !!edspMap[s.id],
+        _has_payroll:     !!phMap[s.id]
+      };
+    });
+
+    res.json(result);
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
