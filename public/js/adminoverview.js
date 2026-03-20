@@ -28,9 +28,19 @@ async function renderOvView() {
 
 // -- Attendance Today ------------------------------------
 async function renderAttOv(content) {
-  const date = document.getElementById('ov-date').value || new Date().toISOString().split('T')[0];
+  // Use local date (not UTC) to avoid timezone mismatch for IST users
+  function localDate() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  // Force ov-date to local date if it shows yesterday (UTC vs IST mismatch)
+  var _ld = new Date();
+  var _localToday = _ld.getFullYear()+'-'+String(_ld.getMonth()+1).padStart(2,'0')+'-'+String(_ld.getDate()).padStart(2,'0');
+  var _ovDate = document.getElementById('ov-date');
+  if (!_ovDate.value || _ovDate.value < _localToday) _ovDate.value = _localToday;
+  const date = _ovDate.value;
   document.getElementById('ov-date').value = date;
-  const d = await fetch(`/api/admin/attendance-overview?date=${date}`).then(r=>r.json());
+  const d = await fetch(`/api/admin/attendance-overview?date=${date}`, {credentials:'include'}).then(r=>r.json());
   ovData = d;
   if (ovDrillStation) { renderAttDrill(content, ovDrillStation, date); return; }
   const totalPresent = d.stations.reduce((a,s)=>a+s.present,0);
@@ -43,6 +53,7 @@ async function renderAttOv(content) {
       <div class="stat-box"><div class="stat-val">${total}</div><div class="stat-lbl">Total ICs</div></div>
       <div class="stat-box"><div class="stat-val" style="color:var(--blue)">${d.stations.length}</div><div class="stat-lbl">Stations</div></div>
     </div>
+    <div id="cm-att-overview-panel"></div>
     <div class="ov-grid">${d.stations.map(s => {
       const pct = s.total ? Math.round(s.present/s.total*100) : 0;
       const col = pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)';
@@ -58,6 +69,7 @@ async function renderAttOv(content) {
         <div style="font-size:.68rem;color:var(--text-3);margin-top:4px">${pct}% present · click for detail</div>
       </div>`;
     }).join('')}</div>`;
+  setTimeout(function(){ loadCMAttSummary(content, date); }, 0);
 }
 
 function renderAttDrill(content, station, date) {
@@ -101,7 +113,7 @@ function renderAttDrill(content, station, date) {
 // -- Period Attendance Overview ---------------------------
 async function renderPeriodAttOv(content) {
   const period = document.getElementById('ov-period').value || activePL;
-  const d = await fetch(`/api/admin/period-attendance-overview?period=${period}`).then(r=>r.json());
+  const d = await fetch(`/api/admin/period-attendance-overview?period=${period}`, {credentials:'include'}).then(r=>r.json());
   ovData = d;
   if (ovDrillStation) { renderPeriodDrill(content, ovDrillStation); return; }
   const p = d.period || {};
@@ -159,7 +171,7 @@ function renderPeriodDrill(content, station) {
 // -- Submission Overview ---------------------------------
 async function renderSubmitOv(content) {
   const p = document.getElementById('ov-period').value || activePL;
-  const listRaw = await fetch(`/api/admin/submission-status?period=${p}`).then(r=>r.json());
+  const listRaw = await fetch(`/api/admin/submission-status?period=${p}`, {credentials:'include'}).then(r=>r.json());
   if(!Array.isArray(listRaw)){content.innerHTML=`<div style="padding:24px;color:var(--red-d)">Error: ${listRaw.error||'Failed to load'}</div>`;return;}
   const list = listRaw;
   ovData = {stations: list.map(s=>({station:s.station, ...s}))};
@@ -181,7 +193,7 @@ async function renderSubmitOv(content) {
 // -- Advances Overview -----------------------------------
 async function renderAdvOv(content) {
   const p = document.getElementById('ov-period').value || activePL;
-  const data = await fetch(`/api/admin/adv-report?period=${p}`).then(r=>r.json());
+  const data = await fetch(`/api/admin/adv-report?period=${p}`, {credentials:'include'}).then(r=>r.json());
   if(!Array.isArray(data)){content.innerHTML=`<div style="padding:24px;color:var(--red-d)">Error: ${data.error||'Failed to load'}</div>`;return;}
   ovData = data;
   if (ovDrillStation) {
@@ -225,9 +237,9 @@ async function renderAdvOv(content) {
 // -- Debit Overview --------------------------------------
 async function renderDebOv(content) {
   const p = document.getElementById('ov-period').value || activePL;
-  const data = await fetch(`/api/admin/deb-report?period=${p}`).then(r=>r.json());
+  const data = await fetch(`/api/admin/deb-report?period=${p}`, {credentials:'include'}).then(r=>r.json());
   if(!Array.isArray(data)){content.innerHTML=`<div style="padding:24px;color:var(--red-d)">Error: ${data.error||'Failed to load'}</div>`;return;}
-  const debItems = await fetch(`/api/admin/debit-items?period=${p}`).then(r=>r.json()).catch(()=>[]);
+  const debItems = await fetch(`/api/admin/debit-items?period=${p}`, {credentials:'include'}).then(r=>r.json()).catch(()=>[]);
   ovData = {responses:data, items:debItems};
   if (ovDrillStation) {
     const rows = data.filter(r=>r.station_code===ovDrillStation);
@@ -288,4 +300,44 @@ function fmtDate(d){if(!d)return '-';const dt=new Date(d);return dt.toLocaleDate
 function fmtMins(m) {
   if (!m) return '0m';
   return m<60?`${m}m`:`${Math.floor(m/60)}h${m%60?String(m%60).padStart(2,'0')+'m':''}`;
+}
+// ── CM Attendance Summary (admin overview) ────────────────────────────────
+async function loadCMAttSummary(content, date) {
+  var user = window._adminUser || JSON.parse(sessionStorage.getItem('adm_user')||'null');
+  if (!user || !['superadmin','ops_admin'].includes(user.role)) return;
+  try {
+    // Always use the same date as the attendance overview is showing
+    var r = await fetch('/api/cm/attendance-summary?date=' + date, {credentials:'include'});
+    var cms = await r.json();
+    console.log('[CM att] queried date:', date, 'results:', JSON.stringify(cms).substring(0,200));
+    if (!Array.isArray(cms)) { console.log('[CM att] invalid response', cms); return; }
+    if (!cms.length) { console.log('[CM att] no CMs found'); return; }
+    var panel = document.getElementById('cm-att-overview-panel');
+    if (!panel) { console.log('[CM att] panel element not found'); return; }
+    var present = cms.filter(function(c){ return c.present; }).length;
+    var html = '<div style="margin:0 0 16px;padding:14px 16px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+        '<div style="font-weight:700;font-size:.88rem;color:#15803d">🗺 Cluster Managers Today</div>' +
+        '<span style="font-size:.8rem;color:#166534"><strong>' + present + '</strong> / ' + cms.length + ' present</span>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">' +
+      cms.map(function(cm) {
+        var srcIcon = !cm.first_in ? '' : cm.sources.includes('WH_MACHINE') ? '🏭' : cm.sources.includes('MOBILE') ? '📱' : '💻';
+        var timeIn  = cm.first_in  ? new Date(cm.first_in).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})  : null;
+        var timeOut = cm.last_out  ? new Date(cm.last_out).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : null;
+        var stVisited = cm.stations_visited ? cm.stations_visited.split(',').filter(Boolean) : [];
+        return '<div style="padding:8px 10px;background:#fff;border-radius:8px;border:1px solid #bbf7d0">' +
+          '<div style="font-weight:600;font-size:.82rem;color:#0f2744;margin-bottom:3px">' + (cm.cm_name||'—') + ' ' + srcIcon + '</div>' +
+          '<div style="font-size:.74rem;color:#166534">' +
+            (cm.present
+              ? (timeIn ? 'In: ' + timeIn : '') + (timeOut ? ' · Out: ' + timeOut : ' · Active') +
+                (stVisited.length ? '<br><span style="color:#64748b">Visited: ' + stVisited.join(', ') + '</span>' : '')
+              : '<span style="color:#94a3b8">Not visited yet</span>') +
+          '</div>' +
+          (cm.assigned_stations ? '<div style="font-size:.7rem;color:#94a3b8;margin-top:2px">Assigned: ' + cm.assigned_stations + '</div>' : '') +
+        '</div>';
+      }).join('') +
+      '</div></div>';
+    panel.innerHTML = html;
+  } catch(e) { /* silent fail */ }
 }

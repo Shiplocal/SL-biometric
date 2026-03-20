@@ -3,9 +3,13 @@
  * Modules: Biometric Attendance + KMS/IC + Attendance Period + Advances + Debit Flow
  */
 
+// ── Kill stale processes from previous LiteSpeed spawns ──
+try { require('./cleanup').cleanupStaleProcesses(); } catch(e) { console.warn('cleanup skip:', e.message); }
+
 const express  = require('express');
 const mysql    = require('mysql2/promise');
 const crypto   = require('crypto');
+const bcrypt   = require('bcrypt');
 const path     = require('path');
 const multer   = require('multer');
 const csvParse = require('csv-parse');
@@ -24,9 +28,13 @@ try {
 }
 const csv = { parse: (str, opts) => _syncParse(str, opts) };
 
+const cookieParser = require('cookie-parser');
 const app    = express();
+app.use(cookieParser());
 const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json({ limit: '100mb' }));
+
+
 
 const pool = mysql.createPool({
   host: 'localhost', user: 'bifmein1_dbuser',
@@ -40,6 +48,165 @@ const legacyPool = mysql.createPool({
   password: 'eA]n(gsN=[_2', database: 'bifmein1_nship24',
   dateStrings: true
 });
+
+// ── ONE-TIME MIGRATIONS ──────────────────────────────────
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debit_data' AND COLUMN_NAME='recovery_month'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute("ALTER TABLE debit_data ADD COLUMN recovery_month TINYINT NULL"); })
+  .catch(function(){});
+// ── Admin auth tables ─────────────────────────────────────────────────────────
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='admin_users'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE admin_users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(150) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('superadmin','ops_admin','finance','hr','viewer','cluster_manager') NOT NULL DEFAULT 'viewer',
+    extra_tabs JSON DEFAULT NULL,
+    denied_tabs JSON DEFAULT NULL,
+    force_pw_change TINYINT DEFAULT 0,
+    is_active TINYINT DEFAULT 1,
+    created_by INT DEFAULT NULL,
+    last_login DATETIME DEFAULT NULL,
+    last_login_ip VARCHAR(45) DEFAULT NULL,
+    failed_attempts TINYINT DEFAULT 0,
+    locked_until DATETIME DEFAULT NULL,
+    created_at DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_email (email)
+  )`); })
+  .catch(function(e){ console.error('admin_users migration:', e.message); });
+
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='admin_sessions'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE admin_sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token_hash VARCHAR(64) NOT NULL,
+    ip_address VARCHAR(45) DEFAULT NULL,
+    user_agent VARCHAR(300) DEFAULT NULL,
+    created_at DATETIME DEFAULT NOW(),
+    expires_at DATETIME NOT NULL,
+    last_seen DATETIME DEFAULT NOW(),
+    revoked TINYINT DEFAULT 0,
+    UNIQUE KEY uq_token (token_hash),
+    INDEX idx_sess_user (user_id),
+    INDEX idx_sess_expires (expires_at)
+  )`); })
+  .catch(function(e){ console.error('admin_sessions migration:', e.message); });
+
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='audit_log'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE audit_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT DEFAULT NULL,
+    user_name VARCHAR(100) DEFAULT NULL,
+    action VARCHAR(60) NOT NULL,
+    entity VARCHAR(60) DEFAULT NULL,
+    entity_id VARCHAR(100) DEFAULT NULL,
+    detail JSON DEFAULT NULL,
+    ip_address VARCHAR(45) DEFAULT NULL,
+    created_at DATETIME DEFAULT NOW(),
+    INDEX idx_audit_user (user_id),
+    INDEX idx_audit_action (action),
+    INDEX idx_audit_at (created_at)
+  )`); })
+  .catch(function(e){ console.error('audit_log migration:', e.message); });
+
+// ── CM WH tokens table
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cm_wh_tokens'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE cm_wh_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) NOT NULL,
+    admin_user_id INT NOT NULL,
+    station_code VARCHAR(20) NOT NULL,
+    used TINYINT DEFAULT 0,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_token (token),
+    INDEX idx_cm_wh_exp (expires_at)
+  )`); })
+  .catch(function(e){ console.error('cm_wh_tokens migration:', e.message); });
+
+// ── Ensure cluster_manager is in admin_users role ENUM
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='admin_users' AND COLUMN_NAME='role'")
+  .then(function(){ return pool.execute("ALTER TABLE admin_users MODIFY COLUMN role ENUM('superadmin','ops_admin','finance','hr','viewer','cluster_manager') NOT NULL DEFAULT 'viewer'"); })
+  .catch(function(e){ console.error('role enum migration:', e.message); });
+
+// ── CM staff ID link on admin_users
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='admin_users' AND COLUMN_NAME='cm_staff_id'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute("ALTER TABLE admin_users ADD COLUMN cm_staff_id INT DEFAULT NULL, ADD INDEX idx_cm_staff (cm_staff_id)"); })
+  .catch(function(e){ console.error('cm_staff_id migration:', e.message); });
+
+// ── CM Attendance table
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cm_attendance'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE cm_attendance (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cm_staff_id INT NOT NULL,
+    cm_name VARCHAR(100) NOT NULL,
+    station_code VARCHAR(20) NOT NULL,
+    punch_type ENUM('CLOCK_IN','CLOCK_OUT') NOT NULL,
+    punched_at DATETIME DEFAULT NOW(),
+    source ENUM('WH_MACHINE','MOBILE','LAPTOP') DEFAULT 'MOBILE',
+    machine_id VARCHAR(50) DEFAULT NULL,
+    ip_address VARCHAR(45) DEFAULT NULL,
+    latitude DECIMAL(10,8) DEFAULT NULL,
+    longitude DECIMAL(11,8) DEFAULT NULL,
+    location_accuracy FLOAT DEFAULT NULL,
+    created_at DATETIME DEFAULT NOW(),
+    INDEX idx_cma_staff (cm_staff_id),
+    INDEX idx_cma_station (station_code),
+    INDEX idx_cma_date (punched_at)
+  )`); })
+  .catch(function(e){ console.error('cm_attendance migration:', e.message); });
+
+// ── Export log table
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='export_log'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE export_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    exported_by VARCHAR(100) NOT NULL,
+    export_type VARCHAR(60) NOT NULL,
+    export_params JSON DEFAULT NULL,
+    row_count INT DEFAULT 0,
+    exported_at DATETIME DEFAULT NOW(),
+    INDEX idx_exp_type (export_type),
+    INDEX idx_exp_at (exported_at)
+  )`); })
+  .catch(function(e){ console.error('export_log migration:', e.message); });
+
+// ── Invoice table
+pool.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='invoices'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute(`CREATE TABLE invoices (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    invoice_number VARCHAR(60) NOT NULL,
+    station VARCHAR(20) NOT NULL,
+    amazon_entity VARCHAR(20) DEFAULT NULL,
+    invoice_date DATE DEFAULT NULL,
+    period_from DATE DEFAULT NULL,
+    period_to DATE DEFAULT NULL,
+    net_amount_due DECIMAL(14,2) DEFAULT 0,
+    taxable_subtotal DECIMAL(14,2) DEFAULT 0,
+    total_gst DECIMAL(14,2) DEFAULT 0,
+    total_taxable DECIMAL(14,2) DEFAULT 0,
+    chargeback_package_loss DECIMAL(14,2) DEFAULT 0,
+    chargeback_cod_loss DECIMAL(14,2) DEFAULT 0,
+    total_chargebacks DECIMAL(14,2) DEFAULT 0,
+    line_items JSON DEFAULT NULL,
+    pdf_filename VARCHAR(255) DEFAULT NULL,
+    uploaded_by VARCHAR(100) DEFAULT NULL,
+    uploaded_at DATETIME DEFAULT NOW(),
+    notes TEXT DEFAULT NULL,
+    UNIQUE KEY uq_inv (invoice_number),
+    INDEX idx_inv_station (station),
+    INDEX idx_inv_date (invoice_date)
+  )`); })
+  .catch(function(e){ console.error('Invoice table migration:', e.message); });
+// Recovery response columns — each always means the same thing
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debit_responses' AND COLUMN_NAME='recovery_type'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute("ALTER TABLE debit_responses ADD COLUMN recovery_type VARCHAR(50) NULL"); })
+  .catch(function(){});
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debit_responses' AND COLUMN_NAME='recovery_confirm_by'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute("ALTER TABLE debit_responses ADD COLUMN recovery_confirm_by VARCHAR(100) NULL"); })
+  .catch(function(){});
+pool.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debit_responses' AND COLUMN_NAME='recovery_ic_names'")
+  .then(function(r){ if(!r[0]||!r[0].length) return pool.execute("ALTER TABLE debit_responses ADD COLUMN recovery_ic_names VARCHAR(2000) NULL"); })
+  .catch(function(){});
 
 // SQL helper: timestamp column name (backtick-safe in template literals)
 
@@ -234,6 +401,44 @@ app.post('/api/machine-delete', async (req, res) => {
 //  STAFF & BIOMETRICS
 // -------------------------------------------------------
 
+// ── IC list by station (for debit entry dropdown) ────────────────────────────
+app.get('/api/ic-list', async (req, res) => {
+  const { station } = req.query;
+  if (!station) return res.status(400).json({error:'station required'});
+  try {
+    const [ics] = await pool.execute(
+      `SELECT w.ic_id, w.ic_name,
+              CASE COALESCE(s.user_type,0)
+                WHEN 2  THEN 'Station Incharge'
+                WHEN 4  THEN 'Delivery Associate'
+                WHEN 5  THEN 'Cluster Manager'
+                WHEN 8  THEN 'Van Associate'
+                WHEN 14 THEN 'Station Associate'
+                WHEN 19 THEN 'Team Leader'
+                WHEN 20 THEN 'Loader'
+                ELSE ''
+              END AS designation
+       FROM config_whic w
+       LEFT JOIN staff s ON s.id = w.staff_id
+       WHERE w.is_active=1 AND w.station_code=?
+       ORDER BY w.ic_name`,
+      [station]
+    );
+    // Also get CM for this station
+    const [stRows] = await pool.execute(
+      `SELECT s.station_code,
+              TRIM(CONCAT(COALESCE(cm.fname,''),' ',COALESCE(cm.lname,''))) AS cluster_manager
+       FROM stations s
+       LEFT JOIN staff cm ON cm.id = s.primary_cluster_manager
+       WHERE s.station_code=? AND s.is_delete=0
+       LIMIT 1`,
+      [station]
+    );
+    const cm = stRows[0] ? (stRows[0].cluster_manager||'').trim() : '';
+    res.json({ ics, cluster_manager: cm });
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 app.get('/api/staff/:station', async (req, res) => {
   try {
     const station = req.params.station;
@@ -386,7 +591,7 @@ app.get('/api/logs', async (req, res) => {
 //  VIOLATIONS
 // -------------------------------------------------------
 
-app.get('/api/violations', async (req, res) => {
+app.get('/api/violations', requireAdminAuth, addCMStations, async (req, res) => {
   try {
     const {month, station, resolved} = req.query;
     let sql = 'SELECT * FROM attendance_violations';
@@ -394,6 +599,9 @@ app.get('/api/violations', async (req, res) => {
     if (month){wh.push('month_year=?');p.push(month);}
     if (station){wh.push('station_code=?');p.push(station);}
     if (resolved!==undefined){wh.push('resolved=?');p.push(resolved==='true'?1:0);}
+    // CM station scoping
+    const {clause: cmC, params: cmP} = cmStationClause(req, 'station_code');
+    if (cmC) { wh.push('station_code IN (' + cmP.map(()=>'?').join(',') + ')'); p.push(...cmP); }
     if (wh.length) sql+=' WHERE '+wh.join(' AND ');
     sql+=' ORDER BY violation_date DESC LIMIT 500';
     const [r] = await pool.execute(sql, p);
@@ -596,31 +804,68 @@ app.post('/api/submit-adv', async (req, res) => {
 // -- DEB Submit ---------------------------------------
 app.post('/api/submit-deb', async (req, res) => {
   const {station, periodLabel, rows, verifiedBy} = req.body;
+  console.log('[submit-deb] received', rows?.length, 'rows from', station);
   // Filter to only rows that have a response filled in — New rows are categorised separately
   const filled = (rows||[]).filter(r => {
     if (r.subType === 'New') return false;
-    return r.subType==='Final Loss' ? !!r.decision : !!(r.dispute||r.tt||r.orphan||r.remarks);
+    // Final Loss: needs decision; Recovery/Case Open: needs any field filled
+    if (r.subType === 'Final Loss') return !!r.decision;
+    // For Recovery and Case Open check all possible fields
+    return !!(r.decision||r.dispute||r.tt||r.orphan||r.remarks);
   });
+  console.log('[submit-deb] filtered to', filled.length, 'filled rows:', filled.map(r=>r.tid+'/'+r.subType));
   if (!filled.length) return res.status(400).json({error:'No completed responses to submit'});
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     for (const r of filled) {
-      const decision = r.subType==='Final Loss' ? (r.decision||'') : (r.dispute||'');
-      await conn.execute(
-        `INSERT INTO debit_responses
-           (station_code,tid,sub_type,decision,tt_number,orphan_ref,remarks,submitted_by,period_label,verified_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?)
-         ON DUPLICATE KEY UPDATE
-           decision=VALUES(decision), tt_number=VALUES(tt_number),
-           orphan_ref=VALUES(orphan_ref), remarks=VALUES(remarks),
-           submitted_by=VALUES(submitted_by), submitted_at=NOW(),
-           verified_by=VALUES(verified_by)`,
-        [station, r.tid, r.subType||'', decision,
-         r.tt||'', r.orphan||'', r.remarks||'', r.user||'Manager',
-         periodLabel, verifiedBy||null]
-      );
+      if (r.subType === 'Final Loss') {
+        // Final Loss: decision = Yes/No only
+        await conn.execute(
+          `INSERT INTO debit_responses
+             (station_code,tid,sub_type,decision,remarks,submitted_by,period_label,verified_by)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON DUPLICATE KEY UPDATE
+             decision=VALUES(decision), remarks=VALUES(remarks),
+             submitted_by=VALUES(submitted_by), submitted_at=NOW(),
+             verified_by=VALUES(verified_by)`,
+          [station, r.tid, r.subType, r.decision||'',
+           r.remarks||'', r.user||'Manager', periodLabel, verifiedBy||null]
+        );
+      } else if (r.subType === 'Recovery') {
+        // Recovery: dedicated columns — never reuse tt_number/orphan_ref
+        await conn.execute(
+          `INSERT INTO debit_responses
+             (station_code,tid,sub_type,recovery_type,recovery_confirm_by,recovery_ic_names,remarks,submitted_by,period_label,verified_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON DUPLICATE KEY UPDATE
+             recovery_type=VALUES(recovery_type),
+             recovery_confirm_by=VALUES(recovery_confirm_by),
+             recovery_ic_names=VALUES(recovery_ic_names),
+             remarks=VALUES(remarks),
+             submitted_by=VALUES(submitted_by), submitted_at=NOW(),
+             verified_by=VALUES(verified_by)`,
+          [station, r.tid, r.subType,
+           r.decision||'', r.tt||'', r.orphan||'',
+           r.remarks||'', r.user||'Manager', periodLabel, verifiedBy||null]
+        );
+      } else {
+        // Case Open: tt_number and orphan_ref always mean TT# and Orphan/Label ID
+        await conn.execute(
+          `INSERT INTO debit_responses
+             (station_code,tid,sub_type,decision,tt_number,orphan_ref,remarks,submitted_by,period_label,verified_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON DUPLICATE KEY UPDATE
+             decision=VALUES(decision), tt_number=VALUES(tt_number),
+             orphan_ref=VALUES(orphan_ref), remarks=VALUES(remarks),
+             submitted_by=VALUES(submitted_by), submitted_at=NOW(),
+             verified_by=VALUES(verified_by)`,
+          [station, r.tid, r.subType,
+           r.dispute||r.decision||'', r.tt||'', r.orphan||'',
+           r.remarks||'', r.user||'Manager', periodLabel, verifiedBy||null]
+        );
+      }
       await conn.execute(
         `UPDATE debit_data SET status='answered' WHERE tid=? AND station_code=? AND status='published'`,
         [r.tid, station]
@@ -760,12 +1005,22 @@ app.get('/api/admin/historical-edsp-periods', async (req, res) => {
              COUNT(*) AS total_rows,
              COUNT(DISTINCT station_code) AS stations,
              COUNT(DISTINCT amx_id) AS ics,
+             ROUND(SUM(kms)) AS total_kms,
              MIN(delivery_date) AS date_from,
-             MAX(delivery_date) AS date_to
+             MAX(delivery_date) AS date_to,
+             MIN(period_from) AS period_from_override,
+             MIN(period_to)   AS period_to_override
       FROM log_amx_history
       GROUP BY period_label
       ORDER BY MIN(delivery_date) DESC`);
-    res.json(rows);
+    // Use override dates if set, else fall back to min/max delivery_date
+    const result = rows.map(r => ({
+      ...r,
+      date_from: r.period_from_override || r.date_from,
+      date_to:   r.period_to_override   || r.date_to,
+      has_override: !!(r.period_from_override || r.period_to_override)
+    }));
+    res.json(result);
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
@@ -839,6 +1094,16 @@ app.get('/api/admin/payroll-history-months', async (req, res) => {
       GROUP BY payroll_month
       ORDER BY STR_TO_DATE(CONCAT('01-', payroll_month), '%d-%b-%Y') DESC`);
     res.json(r);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── Payroll history delete ───────────────────────────────────────────────────
+app.delete('/api/admin/payroll-history/:month', async (req, res) => {
+  const month = decodeURIComponent(req.params.month);
+  if (!month) return res.status(400).json({error:'month required'});
+  try {
+    const [r] = await pool.execute('DELETE FROM payroll_history WHERE payroll_month=?', [month]);
+    res.json({ok:true, deleted: r.affectedRows});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
@@ -932,6 +1197,20 @@ app.patch('/api/admin/dsp-payroll-period', async (req, res) => {
 });
 
 // KMS/EDSP period label update
+// Set period date range override for a KMS/EDSP upload period
+app.patch('/api/admin/edsp-period-dates/:period', async (req, res) => {
+  const period = decodeURIComponent(req.params.period);
+  const { period_from, period_to } = req.body || {};
+  if (!period) return res.status(400).json({error:'period required'});
+  try {
+    await pool.execute(
+      'UPDATE log_amx_history SET period_from=?, period_to=? WHERE period_label=?',
+      [period_from||null, period_to||null, period]
+    );
+    res.json({ok:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 app.patch('/api/admin/historical-edsp-period', async (req, res) => {
   const { old_period, new_period } = req.body || {};
   if (!old_period || !new_period) return res.status(400).json({error:'old_period and new_period required'});
@@ -1455,37 +1734,42 @@ app.post('/api/admin/unlock-module', async (req, res) => {
 });
 
 // Admin reports
-app.get('/api/admin/kms-report', async (req, res) => {
+app.get('/api/admin/kms-report', requireAdminAuth, addCMStations, async (req, res) => {
   const {period} = req.query;
   try {
-    const [r] = await pool.execute('SELECT * FROM log_amx WHERE period_label=? ORDER BY station_code,amx_id', [period]);
+    const {clause, params} = cmStationClause(req, 'station_code');
+    const [r] = await pool.execute('SELECT * FROM log_amx WHERE period_label=?' + clause + ' ORDER BY station_code,amx_id', [period, ...params]);
     res.json(r);
   } catch(e) { res.status(500).json({error:'Failed'}); }
 });
 
-app.get('/api/admin/att-report', async (req, res) => {
+app.get('/api/admin/att-report', requireAdminAuth, addCMStations, async (req, res) => {
   const {period} = req.query;
   try {
-    const [r] = await pool.execute('SELECT l.station_code, l.ic_id, l.ic_name, p.period_label, COUNT(DISTINCT DATE(l.`timestamp`)) AS days_submitted FROM log_attendance_wh l JOIN config_period p ON DATE(l.`timestamp`) BETWEEN p.period_start AND p.period_end WHERE p.period_label=? AND l.punch_type=\'CLOCK_IN\' GROUP BY l.station_code,l.ic_id,l.ic_name,p.period_label ORDER BY l.station_code,l.ic_name', [period]);
+    const {clause, params} = cmStationClause(req, 'l.station_code');
+    const [r] = await pool.execute('SELECT l.station_code, l.ic_id, l.ic_name, p.period_label, COUNT(DISTINCT DATE(l.`timestamp`)) AS days_submitted FROM log_attendance_wh l JOIN config_period p ON DATE(l.`timestamp`) BETWEEN p.period_start AND p.period_end WHERE p.period_label=? AND l.punch_type=\'CLOCK_IN\'' + clause + ' GROUP BY l.station_code,l.ic_id,l.ic_name,p.period_label ORDER BY l.station_code,l.ic_name', [period, ...params]);
     res.json(r);
   } catch(e) { res.status(500).json({error:'Failed'}); }
 });
 
-app.get('/api/admin/adv-report', async (req, res) => {
+app.get('/api/admin/adv-report', requireAdminAuth, addCMStations, async (req, res) => {
   const {period} = req.query;
   try {
-    const [r] = await pool.execute('SELECT * FROM log_advances WHERE period_label=? ORDER BY station_code,ic_name', [period]);
+    const {clause, params} = cmStationClause(req, 'station_code');
+    const [r] = await pool.execute('SELECT * FROM log_advances WHERE period_label=?' + clause + ' ORDER BY station_code,ic_name', [period, ...params]);
     res.json(r);
   } catch(e) { res.status(500).json({error:'Failed'}); }
 });
 
-app.get('/api/admin/deb-report', async (req, res) => {
+app.get('/api/admin/deb-report', requireAdminAuth, addCMStations, async (req, res) => {
   const {month, station} = req.query;
   try {
     let sql = `SELECT d.tid, d.station_code, d.debit_date, d.bucket, d.loss_sub_bucket,
                       d.shipment_type, d.ic_name, d.amount, d.confirm_by,
                       d.cash_recovery_type, d.cm_confirm, d.publish_month,
+                      d.cluster, d.recovery_month,
                       r.decision, r.tt_number, r.orphan_ref,
+                      r.recovery_type, r.recovery_confirm_by, r.recovery_ic_names,
                       r.remarks, r.submitted_at, r.sub_type, r.verified_by
                FROM debit_data d
                JOIN debit_responses r ON r.tid = d.tid AND r.station_code = d.station_code
@@ -1493,6 +1777,8 @@ app.get('/api/admin/deb-report', async (req, res) => {
     const params = [];
     if (month)   { sql += ' AND d.publish_month=?';   params.push(month); }
     if (station) { sql += ' AND d.station_code=?';    params.push(station); }
+    const {clause: cmClause, params: cmParams} = cmStationClause(req, 'd.station_code');
+    if (cmClause) { sql += cmClause; params.push(...cmParams); }
     sql += ' ORDER BY d.station_code, d.tid';
     const [rows] = await pool.execute(sql, params);
     res.json(rows);
@@ -1513,14 +1799,16 @@ app.get('/api/admin/deb-months', async (req, res) => {
   } catch(e) { res.status(500).json({error: e.message}); }
 });
 
-app.get('/api/admin/submission-status', async (req, res) => {
+app.get('/api/admin/submission-status', requireAdminAuth, addCMStations, async (req, res) => {
   const {period} = req.query;
   try {
     // Primary: get stations from legacy stores table
     let stationCodes = [];
     try {
+      const {clause, params} = cmStationClause(req, 'station_code');
       const [rows] = await pool.execute(
-        `SELECT station_code FROM stations WHERE is_delete=0 AND status=0 AND station_code!='' ORDER BY station_code`
+        `SELECT station_code FROM stations WHERE is_delete=0 AND status=0 AND station_code!=''` + clause + ` ORDER BY station_code`,
+        params
       );
       stationCodes = rows.map(r => r.station_code).filter(Boolean);
     } catch(e) {}
@@ -1585,13 +1873,39 @@ app.get('/api/admin/advance-requests', async (req, res) => {
 
 app.get('/api/admin/attendance-overview', async (req, res) => {
   try {
-    const date = req.query.date || new Date().toISOString().split('T')[0];
+    // Default to IST date (UTC+5:30) if not provided
+  const date = req.query.date || nowIST().split(' ')[0];
     const period = await getActivePeriod();
-    // All staff grouped by station from legacy DB
+    // Inline CM scoping — check session cookie directly
+    var cmStations = null;
+    try {
+      const raw = req.cookies && req.cookies.adm_session;
+      if (raw) {
+        const hash = crypto.createHash('sha256').update(raw).digest('hex');
+        const [srows] = await pool.execute(
+          `SELECT u.role, u.cm_staff_id FROM admin_sessions s
+           JOIN admin_users u ON s.user_id=u.id
+           WHERE s.token_hash=? AND s.revoked=0 AND s.expires_at>NOW() AND u.is_active=1 LIMIT 1`,
+          [hash]
+        );
+        if (srows.length && srows[0].role === 'cluster_manager' && srows[0].cm_staff_id) {
+          const [stRows] = await pool.execute(
+            'SELECT station_code FROM stations WHERE primary_cluster_manager=? AND is_delete=0 AND status=0',
+            [srows[0].cm_staff_id]
+          );
+          cmStations = stRows.map(function(r){ return r.station_code; });
+        }
+      }
+    } catch(e2) { console.error('[CM scope]', e2.message); }
+    const stationFilter = (cmStations && cmStations.length)
+      ? 'AND station_code IN (' + cmStations.map(function(){ return '?'; }).join(',') + ')'
+      : '';
+    const stationParams = (cmStations && cmStations.length) ? cmStations : [];
     const SC = "REPLACE(REPLACE(s.station_code,CHAR(13),''),CHAR(10),'')";
     const [[staffRows], [clockIns], [openShifts]] = await Promise.all([
       pool.execute(
-        `SELECT ic_id, ic_name, station_code FROM config_whic WHERE is_active=1`
+        `SELECT ic_id, ic_name, station_code FROM config_whic WHERE is_active=1 ${stationFilter}`,
+        stationParams
       ),
       // Who punched in on this date
       pool.execute(
@@ -1669,6 +1983,438 @@ app.patch('/api/admin/debit-data/:id/subtype', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
+// ── PATCH full draft edit ──────────────────────────────────
+app.patch('/api/admin/debit-data/:id', async (req, res) => {
+  const id = req.params.id;
+  const {impact_date, loss_bucket, loss_sub_bucket, shipment_type, cluster,
+         ic_name, value, confirm_by, cash_recovery_type, cm_confirm,
+         sub_type, remarks, recovery_month, status} = req.body;
+  const allowedStatus = ['draft','published'];
+  if (status && !allowedStatus.includes(status)) return res.status(400).json({error:'Invalid status'});
+  function toYMD(s){ if(!s) return null; if(s.includes('/')) { const p=s.split('/'); if(p.length===3&&p[2].length===4) return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } const p=s.split('-'); if(p.length!==3) return s; if(p[0].length===4) return s; return p[2]+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0'); }
+  try {
+    await pool.execute(
+      `UPDATE debit_data SET
+         debit_date=?, bucket=?, loss_sub_bucket=?, shipment_type=?,
+         cluster=?, ic_name=?, amount=?, confirm_by=?,
+         cash_recovery_type=?, cm_confirm=?, sub_type=?, remarks=?,
+         recovery_month=?, status=COALESCE(?,status)
+       WHERE id=? AND status IN ('draft','published')`,
+      [toYMD(impact_date)||null, loss_bucket||'', loss_sub_bucket||null,
+       shipment_type||null, cluster||null, ic_name||null,
+       parseFloat(value)||0, confirm_by||'', cash_recovery_type||null,
+       cm_confirm||null,
+       (['Final Loss','New'].includes(sub_type) ? sub_type : 'New'),
+       remarks||null, parseInt(recovery_month)||null,
+       status||null, id]
+    );
+    res.json({success:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+
+
+
+// ════════════════════════════════════════════════════════════════════════════
+
+// CLUSTER MANAGER ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/admin/cluster-managers — list all CMs from staff table ───────
+app.get('/api/admin/cluster-managers', requireAdminAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        s.id, s.fname, s.lname,
+        TRIM(CONCAT(COALESCE(s.fname,''),' ',COALESCE(s.lname,''))) AS full_name,
+        s.mobile, s.email, s.station_code,
+        GROUP_CONCAT(DISTINCT st.station_code ORDER BY st.station_code SEPARATOR ', ') AS assigned_stations,
+        COUNT(DISTINCT st.station_code) AS station_count,
+        u.id AS admin_user_id, u.email AS admin_email, u.role AS admin_role, u.is_active AS admin_active
+      FROM staff s
+      LEFT JOIN stations st ON st.primary_cluster_manager = s.id AND st.is_delete=0 AND st.status=0
+      LEFT JOIN admin_users u ON (u.cm_staff_id = s.id OR (u.cm_staff_id IS NULL AND LOWER(u.email) = LOWER(s.email)))
+      WHERE s.user_type = 5 AND s.status = 0 AND s.is_delete = 0
+      GROUP BY s.id
+      ORDER BY s.fname, s.lname
+    `);
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/admin/cluster-managers/:id/stations — stations for a CM ─────
+app.get('/api/admin/cluster-managers/:id/stations', requireAdminAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT st.station_code, st.store_name, st.state, st.status
+       FROM stations st
+       WHERE st.primary_cluster_manager = ? AND st.is_delete=0
+       ORDER BY st.station_code`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── PATCH /api/admin/cluster-managers/:id/stations — update CM station list
+app.patch('/api/admin/cluster-managers/:id/stations', requireAdminAuth, async (req, res) => {
+  if (!['superadmin','ops_admin'].includes(req.adminUser.role))
+    return res.status(403).json({ error: 'Not authorized' });
+  const { add_stations, remove_stations } = req.body;
+  const staffId = req.params.id;
+  try {
+    if (Array.isArray(add_stations) && add_stations.length) {
+      for (const sc of add_stations) {
+        await pool.execute(
+          'UPDATE stations SET primary_cluster_manager=? WHERE LOWER(station_code)=LOWER(?) AND is_delete=0',
+          [staffId, sc]
+        );
+      }
+    }
+    if (Array.isArray(remove_stations) && remove_stations.length) {
+      for (const sc of remove_stations) {
+        await pool.execute(
+          'UPDATE stations SET primary_cluster_manager=NULL WHERE LOWER(station_code)=LOWER(?) AND primary_cluster_manager=?',
+          [sc, staffId]
+        );
+      }
+    }
+    await writeAudit(req.adminUser.id, req.adminUser.name, 'cm_stations_update', 'staff', staffId,
+      { add_stations, remove_stations }, req.ip);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/admin/auth/me — extend to include scoped stations for CM ─────
+// (handled in requireAdminAuth — add station_codes to user object)
+
+// ── Middleware: scope data to CM's stations ───────────────────────────────
+async function addCMStations(req, res, next) {
+  if (!req.adminUser || req.adminUser.role !== 'cluster_manager') return next();
+  try {
+    // Single query: get cm_staff_id from admin_users, then get their stations
+    const [rows] = await pool.execute(
+      `SELECT st.station_code
+       FROM admin_users u
+       JOIN stations st ON st.primary_cluster_manager = u.cm_staff_id
+       WHERE u.id = ? AND st.is_delete = 0 AND st.status = 0`,
+      [req.adminUser.id]
+    );
+    req.adminUser.cm_stations = rows.map(function(r){ return r.station_code; });
+    console.log('[CM scope] id:', req.adminUser.id, 'stations:', req.adminUser.cm_stations);
+  } catch(e) {
+    console.error('[CM scope error]', e.message);
+    req.adminUser.cm_stations = [];
+  }
+  next();
+}
+
+// ── GET /api/admin/auth/me — also return cm_stations ─────────────────────
+// Patch: update requireAdminAuth to return cm_stations
+// ── EXPORT ENDPOINTS ─────────────────────────────────────────────────────────
+
+// Log an export action
+async function logExport(pool, exported_by, export_type, params, row_count) {
+  try {
+    await pool.execute(
+      'INSERT INTO export_log (exported_by,export_type,export_params,row_count) VALUES (?,?,?,?)',
+      [exported_by, export_type, JSON.stringify(params), row_count]
+    );
+  } catch(e) { console.error('logExport:', e.message); }
+}
+
+// Export log viewer
+app.get('/api/admin/export-log', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id,exported_by,export_type,export_params,row_count,exported_at FROM export_log ORDER BY exported_at DESC LIMIT 200'
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// KMS / EDSP export
+app.get('/api/admin/export/kms', async (req, res) => {
+  const {period, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM log_amx_history WHERE 1=1';
+    const p = [];
+    if (period) { sql += ' AND period_label=?'; p.push(period); }
+    sql += ' ORDER BY period_label, station_code, ic_id';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'kms', {period}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// EDSP Payroll export
+app.get('/api/admin/export/payroll', async (req, res) => {
+  const {month, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM payroll_history WHERE 1=1';
+    const p = [];
+    if (month) { sql += ' AND payroll_month=?'; p.push(month); }
+    sql += ' ORDER BY payroll_month, station_code, ic_name';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'edsp_payroll', {month}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// DSP Payroll export
+app.get('/api/admin/export/dsp-payroll', async (req, res) => {
+  const {month, station, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM dsp_payroll_history WHERE 1=1';
+    const p = [];
+    if (month)   { sql += ' AND payment_month=?'; p.push(month); }
+    if (station) { sql += ' AND station_code=?'; p.push(station); }
+    sql += ' ORDER BY payment_month, station_code, name';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'dsp_payroll', {month, station}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Petrol export
+app.get('/api/admin/export/petrol', async (req, res) => {
+  const {batch, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM petrol_expenses WHERE 1=1';
+    const p = [];
+    if (batch) { sql += ' AND upload_batch=?'; p.push(batch); }
+    sql += ' ORDER BY upload_batch, station_code, name';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'petrol', {batch}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Rent export
+app.get('/api/admin/export/rent', async (req, res) => {
+  const {month, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM rent_history WHERE 1=1';
+    const p = [];
+    if (month) { sql += ' AND payment_month=?'; p.push(month); }
+    sql += ' ORDER BY payment_month, station_code';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'rent', {month}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Additional payments export
+app.get('/api/admin/export/addl', async (req, res) => {
+  const {month, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM additional_payments WHERE 1=1';
+    const p = [];
+    if (month) { sql += ' AND payment_month=?'; p.push(month); }
+    sql += ' ORDER BY payment_month, station_code, ic_name';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'addl_payments', {month}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Bank payments export
+app.get('/api/admin/export/bank', async (req, res) => {
+  const {batch, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = 'SELECT * FROM bank_payments WHERE 1=1';
+    const p = [];
+    if (batch) { sql += ' AND upload_batch=?'; p.push(batch); }
+    sql += ' ORDER BY upload_batch, payment_date, bnf_name';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'bank_payments', {batch}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// Amazon invoices export
+app.get('/api/admin/export/invoices', async (req, res) => {
+  const {station, from, to, entity, exported_by} = req.query;
+  if (!exported_by) return res.status(400).json({error:'exported_by required'});
+  try {
+    let sql = `SELECT invoice_number,station,amazon_entity,invoice_date,period_from,period_to,
+                      net_amount_due,taxable_subtotal,total_gst,total_taxable,
+                      chargeback_package_loss,chargeback_cod_loss,total_chargebacks,
+                      pdf_filename,uploaded_at,notes FROM invoices WHERE 1=1`;
+    const p = [];
+    if (station) { sql += ' AND station=?'; p.push(station); }
+    if (entity)  { sql += ' AND amazon_entity=?'; p.push(entity); }
+    if (from)    { sql += ' AND invoice_date>=?'; p.push(from); }
+    if (to)      { sql += ' AND invoice_date<=?'; p.push(to); }
+    sql += ' ORDER BY invoice_date DESC, station';
+    const [rows] = await pool.execute(sql, p);
+    await logExport(pool, exported_by, 'invoices', {station,from,to,entity}, rows.length);
+    res.json(rows);
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── INVOICE UPLOAD & PARSE ────────────────────────────────
+const PDFParser = require('pdf2json');
+const os = require('os');
+const invoiceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20*1024*1024 } });
+
+function parseInvoiceText(text) {
+  const inv = {};
+  const clean = (s) => s ? parseFloat(s.replace(/[INR₹,\s]/g,'')) || 0 : 0;
+
+  const m1 = text.match(/Invoice Number\s*[-–]\s*(INV-\S+)/);
+  inv.invoice_number = m1 ? m1[1].trim() : '';
+
+  const m2 = text.match(/Bill to:\s*Station:\n.+?\s+([A-Z]{3,6})\n/);
+  const m2b = !m2 && text.match(/Station:\s*\n([A-Z]{3,6})\b/);
+  inv.station = (m2||m2b) ? (m2||m2b)[1].trim() : '';
+
+  const m3 = text.match(/Invoice Date:\n.+?(\d{2}-\w{3}-\d{4})/);
+  const m3b = !m3 && text.match(/\b(\d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})\n/);
+  inv.invoice_date = (m3||m3b) ? (m3||m3b)[1].trim() : null;
+
+  const m4 = text.match(/(\d{2}-\w{3}-\d{4})\s+to\s+(\d{2}-\w{3}-\d{4})/);
+  inv.period_from = m4 ? m4[1] : null;
+  inv.period_to   = m4 ? m4[2] : null;
+
+  const parseDate = (s) => {
+    if (!s) return null;
+    const months = {Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
+    const p = s.match(/(\d{2})-(\w{3})-(\d{4})/);
+    if (!p) return null;
+    return `${p[3]}-${String(months[p[2]]||1).padStart(2,'0')}-${p[1]}`;
+  };
+
+  inv.invoice_date_sql = parseDate(inv.invoice_date);
+  inv.period_from_sql  = parseDate(inv.period_from);
+  inv.period_to_sql    = parseDate(inv.period_to);
+
+  const m5 = text.match(/NET AMOUNT DUE:\s*INR\s*([\d,]+\.?\d*)/);
+  inv.net_amount_due = m5 ? clean(m5[1]) : 0;
+  const m6 = text.match(/Sub Total \(Taxable Amount\)\s+INR\s+([\d,]+\.?\d*)/);
+  inv.taxable_subtotal = m6 ? clean(m6[1]) : 0;
+  const m7 = text.match(/Total GST - IGST 18%\s+INR\s+([\d,]+\.?\d*)/);
+  inv.total_gst = m7 ? clean(m7[1]) : 0;
+  const m8 = text.match(/Total Amount for Taxable Transactions\s+INR\s+([\d,]+\.?\d*)/);
+  inv.total_taxable = m8 ? clean(m8[1]) : 0;
+
+  const m9  = text.match(/ChargebackPackageLoss\s+1\s+[-–]\s+([\d,]+\.?\d*)/);
+  inv.chargeback_package_loss = m9 ? clean(m9[1]) : 0;
+  const m10 = text.match(/ChargebackCashOnDeliveryLoss\s+1\s+[-–]\s+([\d,]+\.?\d*)/);
+  inv.chargeback_cod_loss = m10 ? clean(m10[1]) : 0;
+  inv.total_chargebacks = inv.chargeback_package_loss + inv.chargeback_cod_loss;
+
+  inv.amazon_entity = text.includes('Amazon Seller Services') ? 'ASSPL'
+                    : text.includes('Amazon Transportation')   ? 'ATSPL' : '';
+
+  const items = [];
+  const rx = /^(.+?)\s+1\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+18%\s+INR\s+([\d,]+\.?\d*)$/gm;
+  let mx;
+  while ((mx = rx.exec(text)) !== null) {
+    const desc = mx[1].trim();
+    if (/^\d{2}\/\d{2}\/\d{4}/.test(desc) || desc.length > 80) continue;
+    items.push({ description: desc, base_amount: clean(mx[3]), tax_amount: clean(mx[4]), net_amount: clean(mx[5]) });
+  }
+  inv.line_items = items;
+
+  return inv;
+}
+
+app.post('/api/admin/invoices/upload', invoiceUpload.array('pdfs', 50), async (req, res) => {
+  if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files uploaded' });
+  const results = [];
+  for (const file of req.files) {
+    try {
+      // Parse PDF using pdf2json
+      const pdfText = await new Promise(function(resolve, reject) {
+        const parser = new PDFParser(null, 1);
+        parser.on('pdfParser_dataError', function(e){ reject(new Error(e.parserError)); });
+        parser.on('pdfParser_dataReady', function(){ resolve(parser.getRawTextContent()); });
+        parser.parseBuffer(file.buffer);
+      });
+      const inv = parseInvoiceText(pdfText);
+      if (!inv.invoice_number) { results.push({ file: file.originalname, error: 'Could not parse invoice number' }); continue; }
+      await pool.execute(
+        `INSERT INTO invoices
+           (invoice_number,station,amazon_entity,invoice_date,period_from,period_to,
+            net_amount_due,taxable_subtotal,total_gst,total_taxable,
+            chargeback_package_loss,chargeback_cod_loss,total_chargebacks,
+            line_items,pdf_filename,uploaded_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           station=VALUES(station), amazon_entity=VALUES(amazon_entity),
+           invoice_date=VALUES(invoice_date), period_from=VALUES(period_from),
+           period_to=VALUES(period_to), net_amount_due=VALUES(net_amount_due),
+           taxable_subtotal=VALUES(taxable_subtotal), total_gst=VALUES(total_gst),
+           total_taxable=VALUES(total_taxable),
+           chargeback_package_loss=VALUES(chargeback_package_loss),
+           chargeback_cod_loss=VALUES(chargeback_cod_loss),
+           total_chargebacks=VALUES(total_chargebacks),
+           line_items=VALUES(line_items), pdf_filename=VALUES(pdf_filename)`,
+        [ inv.invoice_number, inv.station, inv.amazon_entity,
+          inv.invoice_date_sql, inv.period_from_sql, inv.period_to_sql,
+          inv.net_amount_due, inv.taxable_subtotal, inv.total_gst, inv.total_taxable,
+          inv.chargeback_package_loss, inv.chargeback_cod_loss, inv.total_chargebacks,
+          JSON.stringify(inv.line_items), file.originalname, req.body.uploaded_by||'Admin' ]
+      );
+      results.push({ file: file.originalname, invoice_number: inv.invoice_number, station: inv.station,
+                     net_amount_due: inv.net_amount_due, chargebacks: inv.total_chargebacks, status: 'saved' });
+    } catch(e) {
+      results.push({ file: file.originalname, error: e.message });
+    }
+  }
+  res.json({ results, saved: results.filter(r=>r.status==='saved').length, errors: results.filter(r=>r.error).length });
+});
+
+app.get('/api/admin/invoices', async (req, res) => {
+  try {
+    const { station, from, to, q, entity } = req.query;
+    let sql = `SELECT id,invoice_number,station,amazon_entity,invoice_date,period_from,period_to,
+                      net_amount_due,taxable_subtotal,total_gst,total_chargebacks,
+                      chargeback_package_loss,chargeback_cod_loss,
+                      pdf_filename,uploaded_at,notes
+               FROM invoices WHERE 1=1`;
+    const p = [];
+    if (station) { sql += ' AND station=?'; p.push(station); }
+    if (entity)  { sql += ' AND amazon_entity=?'; p.push(entity); }
+    if (from)    { sql += ' AND invoice_date>=?'; p.push(from); }
+    if (to)      { sql += ' AND invoice_date<=?'; p.push(to); }
+    if (q)       { sql += ' AND (invoice_number LIKE ? OR station LIKE ?)'; p.push(`%${q}%`,`%${q}%`); }
+    sql += ' ORDER BY invoice_date DESC, station LIMIT 500';
+    const [rows] = await pool.execute(sql, p);
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/admin/invoices/:id/lineitems', async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT line_items FROM invoices WHERE id=?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(JSON.parse(rows[0].line_items || '[]'));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/invoices/:id', async (req, res) => {
+  try {
+    await pool.execute('DELETE FROM invoices WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/admin/invoices/:id/notes', async (req, res) => {
+  try {
+    await pool.execute('UPDATE invoices SET notes=? WHERE id=?', [req.body.notes||'', req.params.id]);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/admin/debit-data/:id', async (req, res) => {
   try { await pool.execute('DELETE FROM debit_data WHERE id=?', [req.params.id]); res.json({success:true}); }
   catch(e) { res.status(500).json({error:e.message}); }
@@ -1677,24 +2423,35 @@ app.delete('/api/admin/debit-data/:id', async (req, res) => {
 app.post('/api/admin/debit-data/single', async (req, res) => {
   const {tid, station_code, impact_date, loss_bucket, loss_sub_bucket, shipment_type,
          cluster, ic_name, value, confirm_by, cash_recovery_type, cm_confirm,
-         sub_type, remarks} = req.body;
+         sub_type, remarks, recovery_month} = req.body;
   if (!tid || !station_code) return res.status(400).json({error:'tid and station_code required'});
   function toYMD(s) { if(!s) return null; const p=s.trim().split('-'); if(p.length!==3) return null; if(p[0].length===4) return s; return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`; }
   try {
+    // Hard reject if TID already exists for this station
+    const [existing] = await pool.execute(
+      `SELECT status, bucket, sub_type FROM debit_data WHERE tid=? AND station_code=?`,
+      [tid.trim(), station_code.toUpperCase().trim()]
+    );
+    if (existing.length > 0) {
+      const ex = existing[0];
+      const where = ex.bucket ? `"${ex.bucket}"` : 'the debit queue';
+      return res.status(409).json({
+        duplicate: true,
+        error: `TID ${tid.trim()} already exists in ${where} (${ex.sub_type||'draft'} — ${ex.status})`,
+        existing: ex
+      });
+    }
+
     await pool.execute(
       `INSERT INTO debit_data (tid,station_code,debit_date,bucket,loss_sub_bucket,shipment_type,
-         cluster,ic_name,amount,confirm_by,cash_recovery_type,cm_confirm,sub_type,remarks,status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')
-       ON DUPLICATE KEY UPDATE debit_date=VALUES(debit_date),bucket=VALUES(bucket),
-         loss_sub_bucket=VALUES(loss_sub_bucket),shipment_type=VALUES(shipment_type),
-         cluster=VALUES(cluster),ic_name=VALUES(ic_name),amount=VALUES(amount),
-         confirm_by=VALUES(confirm_by),cash_recovery_type=VALUES(cash_recovery_type),
-         cm_confirm=VALUES(cm_confirm),sub_type=VALUES(sub_type),remarks=VALUES(remarks)`,
+         cluster,ic_name,amount,confirm_by,cash_recovery_type,cm_confirm,sub_type,remarks,recovery_month,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')`,
       [tid.trim(), station_code.toUpperCase().trim(), toYMD(impact_date),
        loss_bucket||'', loss_sub_bucket||null, shipment_type||null,
        cluster||null, ic_name||null, parseFloat(value)||0,
        confirm_by||'', cash_recovery_type||null, cm_confirm||null,
-       (['Final Loss','New'].includes(sub_type) ? sub_type : 'New'), remarks||null]
+       (['Final Loss','New'].includes(sub_type) ? sub_type : 'New'), remarks||null,
+       parseInt(recovery_month)||null]
     );
     res.json({success:true});
   } catch(e) { res.status(500).json({error:e.message}); }
@@ -1740,7 +2497,12 @@ app.get('/api/admin/debit-queue', async (req, res) => {
     let sql = `SELECT d.* FROM debit_data d WHERE 1=1`;
     const params = [];
     if (station) { sql += ' AND d.station_code=?'; params.push(station); }
-    if (status)  { sql += ' AND d.status=?';       params.push(status); }
+    if (status)  {
+      sql += ' AND d.status=?'; params.push(status);
+    } else {
+      // Default: only show actionable entries (draft + published + sent_back), never answered
+      sql += " AND d.status IN ('draft','published','sent_back')";
+    }
     sql += ' ORDER BY d.id DESC LIMIT 1000';
     const [r] = await pool.execute(sql, params);
     res.json(r);
@@ -1787,6 +2549,33 @@ app.post('/api/admin/debit-sendback', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
+// ── UPDATE DEBIT RESPONSE (WH edit from history drawer) ─────
+app.patch('/api/deb-response/:tid', async (req, res) => {
+  const {tid} = req.params;
+  const {station, sub_type, decision, tt_number, orphan_ref,
+         recovery_type, recovery_confirm_by, recovery_ic_names, remarks} = req.body;
+  if (!tid || !station) return res.status(400).json({error:'tid and station required'});
+  try {
+    let sql, params;
+    if (sub_type === 'Recovery') {
+      sql = `UPDATE debit_responses SET recovery_type=?, recovery_confirm_by=?, recovery_ic_names=?, remarks=?
+             WHERE tid=? AND station_code=?`;
+      params = [recovery_type||'', recovery_confirm_by||'', recovery_ic_names||'', remarks||'', tid, station.toUpperCase()];
+    } else if (sub_type === 'Case Open') {
+      sql = `UPDATE debit_responses SET decision=?, tt_number=?, orphan_ref=?, remarks=?
+             WHERE tid=? AND station_code=?`;
+      params = [decision||'', tt_number||'', orphan_ref||'', remarks||'', tid, station.toUpperCase()];
+    } else {
+      sql = `UPDATE debit_responses SET decision=?, remarks=?
+             WHERE tid=? AND station_code=?`;
+      params = [decision||'', remarks||'', tid, station.toUpperCase()];
+    }
+    const [r] = await pool.execute(sql, params);
+    if (r.affectedRows === 0) return res.status(404).json({error:'Response not found'});
+    res.json({success:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
 // WH debit history — answered items for this station, last 6 months, joined with responses
 app.get('/api/deb-history/:station', async (req, res) => {
   const station = req.params.station;
@@ -1794,15 +2583,16 @@ app.get('/api/deb-history/:station', async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT d.id, d.tid, d.debit_date, d.bucket, d.loss_sub_bucket, d.shipment_type,
               d.ic_name, d.amount, d.confirm_by, d.cash_recovery_type, d.cm_confirm,
-              d.publish_month, d.published_at, d.sub_type,
+              d.publish_month, d.published_at, d.sub_type, d.cluster, d.recovery_month,
               r.decision, r.tt_number, r.orphan_ref, r.remarks AS wh_remarks,
+              r.recovery_type, r.recovery_confirm_by, r.recovery_ic_names,
               r.submitted_at
        FROM debit_data d
-       JOIN debit_responses r ON r.tid = d.tid AND r.station_code = d.station_code
+       LEFT JOIN debit_responses r ON r.tid = d.tid AND r.station_code = d.station_code
        WHERE d.station_code = ?
-         AND d.status = 'answered'
-         AND d.published_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-       ORDER BY d.published_at DESC, d.tid`,
+         AND (d.status = 'answered' OR r.submitted_at IS NOT NULL)
+         AND d.published_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+       ORDER BY COALESCE(r.submitted_at, d.published_at) DESC, d.tid`,
       [station]
     );
     // Group by publish_month
@@ -1824,23 +2614,23 @@ app.get('/api/deb-history/:station', async (req, res) => {
 });
 
 app.get('/api/admin/debit-template', (req, res) => {
-  const headers  = ['tid','impact_date','loss_bucket','loss_sub_bucket','shipment_type','station','cluster','user_name','value','confirm_by','cash_recovery_type','cm_confirm','debit_type','remarks'];
+  const headers  = ['TID','Impact Date','Loss Bucket','Sub Bucket','Shipment Type','Station','Cluster Manager','IC / Staff','Amount ₹','Confirm By','Recovery Type','CM Confirm','Debit Type','Remarks'];
   const example1 = ['365433739065','03-12-2025','Ageing','Shipment Not Departed','Delivery','ANDD','GJ','Rahul Sharma','1190.00','Amitbhai','IC Payment','YES','Final Loss','Confirmed by CM'];
   const example2 = ['629518827741','26-01-2026','WRTS but MDR','Wrong Photo at RTS','ReturnPickup','VDDA','GJ','Harendra Sahu','2111.00','Amitbhai','SHIP BANK','NO','New','WH to categorise as Recovery or Case Open'];
   const notes = [
     'Tracking ID (required) — numeric, or Short Cash / Penalty for non-TID entries',
     'DD-MM-YYYY format (required)',
-    'Ageing / Package Loss / WRTS but MDR / SLP Mail / Panalty',
+    'Ageing / Package Loss / WRTS but MDR / SLP Mail / Penalty',
     'Sub-category free text e.g. Shipment Not Departed',
     'Delivery / ReturnPickup / MFN',
     'Station code e.g. ANDD (required)',
-    'Cluster / region code e.g. GJ, MH (optional)',
-    'IC or DA name responsible for the loss',
+    'Cluster Manager name (optional — auto-filled from station on upload)',
+    'IC / Staff name responsible for the loss (comma-separated for multiple)',
     'Amount in ₹ — no commas e.g. 1801.85 (required)',
     'Name of manager / AM confirming the debit note',
     'IC Payment / SHIP BANK / CASH',
     'YES or NO — CM / Manager confirmation',
-    'Ignored on upload — all CSV entries are created as New by default. Mark as Final Loss individually in the admin queue after upload.',
+    'Ignored on upload — all entries created as New by default. Mark as Final Loss individually in admin queue after upload.',
     'Any additional notes or context'
   ];
   const rows = [headers, example1, example2, notes];
@@ -1857,10 +2647,18 @@ app.post('/api/admin/debit-parse', upload.single('file'), async (req, res) => {
     const content = req.file.buffer.toString('utf8').replace(/^\uFEFF/,'');
     function toYMD(s){
       if(!s) return '';
-      const p = s.trim().split('-');
-      if(p.length!==3) return s.trim();
-      if(p[0].length===4) return s.trim();
-      return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+      s = s.trim();
+      // M/D/YYYY or MM/DD/YYYY (new file format)
+      if(s.includes('/')) {
+        const p = s.split('/');
+        if(p.length===3 && p[2].length===4)
+          return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0');
+      }
+      // DD-MM-YYYY (old file format)
+      const p = s.split('-');
+      if(p.length!==3) return s;
+      if(p[0].length===4) return s; // already YYYY-MM-DD
+      return p[2]+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0');
     }
     function normTid(s){
       if(!s) return '';
@@ -1873,26 +2671,28 @@ app.post('/api/admin/debit-parse', upload.single('file'), async (req, res) => {
     function normAmt(s){ if(!s) return 0; return parseFloat(String(s).replace(/,/g,'')) || 0; }
 
     const raw = csv.parse(content, {columns:true, skip_empty_lines:true, to:500});
-    const junkTids = new Set(['tid','tracking id (required)','tracking id']);
+    const junkTids = new Set(['tid','TID','tracking id (required)','tracking id','Tracking ID']);
     const rows = raw
       .filter(r => {
-        const t = normTid(r['tid']||'').toLowerCase();
+        const t = normTid(r['TID']||r['tid']||'').toLowerCase();
         return t && !junkTids.has(t) && !t.startsWith('. column');
       })
       .map(r => ({
-        tid:            normTid(r['tid']||''),
-        station:        (r['station']||r['station_code']||'').toUpperCase().trim(),
-        impact_date:    toYMD(r['impact_date']||''),
-        loss_bucket:    r['loss_bucket'] || '',
-        loss_sub_bucket:r['loss_sub_bucket'] || '',
-        shipment_type:  r['shipment_type'] || '',
-        cluster:        r['cluster'] || r['Cluster'] || '',
-        ic_name:        r['user_name'] || r['ic_name'] || '',
-        amount:         normAmt(r['value'] || r['amount'] || '0'),
-        confirm_by:     r['confirm_by'] || '',
-        cash_recovery_type: r['cash_recovery_type'] || '',
-        cm_confirm:     r['cm_confirm'] || '',
-        remarks:        r['remarks'] || r['Remarks'] || '',
+        // Accept both old display names (old file) and new internal column names (new file)
+        tid:              normTid(r['TID']||r['tid']||''),
+        station:          (r['Station']||r['station']||r['station_code']||'').toUpperCase().trim(),
+        impact_date:      toYMD(r['Impact Date']||r['impact_date']||''),
+        loss_bucket:      r['Loss Bucket']||r['loss_bucket'] || '',
+        loss_sub_bucket:  r['Sub Bucket']||r['loss_sub_bucket'] || '',
+        shipment_type:    r['Shipment Type']||r['shipment_type'] || '',
+        cluster:          r['Cluster Manager']||r['cluster'] || r['Cluster'] || '',
+        ic_name:          r['IC / Staff']||r['user_name'] || r['ic_name'] || '',
+        amount:           normAmt(r['Amount ₹']||r['value'] || r['amount'] || '0'),
+        confirm_by:       r['Confirm By']||r['confirm_by'] || '',
+        cash_recovery_type: r['Recovery Type']||r['cash_recovery_type'] || '',
+        cm_confirm:       r['CM Confirm']||r['cm_confirm'] || '',
+        remarks:          r['Remarks']||r['remarks'] || '',
+        recovery_month:   parseInt(r['recovery_month']||r['Recovery Month']||'') || null,
       }))
       .filter(r => r.tid && r.station);
 
@@ -1904,33 +2704,55 @@ app.post('/api/admin/debit-parse', upload.single('file'), async (req, res) => {
 app.post('/api/admin/debit-import-rows', async (req, res) => {
   const {rows} = req.body;
   if (!rows||!rows.length) return res.status(400).json({error:'No rows'});
+
+  // Pre-check: find all existing TIDs for these station codes
+  const tidStationPairs = rows.filter(r=>r.tid&&r.station).map(r=>`${r.tid.trim()}::${r.station.toUpperCase().trim()}`);
+  const allTids = [...new Set(rows.filter(r=>r.tid).map(r=>r.tid.trim()))];
+  let existingMap = {};
+  if (allTids.length) {
+    const ph = allTids.map(()=>'?').join(',');
+    const [exRows] = await pool.execute(
+      `SELECT tid, station_code, status, bucket, sub_type FROM debit_data WHERE tid IN (${ph})`,
+      allTids
+    );
+    exRows.forEach(e => { existingMap[`${e.tid}::${e.station_code}`] = e; });
+  }
+
   const conn = await pool.getConnection();
   await conn.beginTransaction();
-  let inserted=0, skipped=0, firstError=null;
+  let inserted=0;
+  const duplicates=[], invalid=[];
+
   for (const r of rows) {
-    if (!r.tid || !r.station) { skipped++; continue; }
+    if (!r.tid || !r.station) { invalid.push(r.tid||'(blank)'); continue; }
+    const key = `${r.tid.trim()}::${r.station.toUpperCase().trim()}`;
+    if (existingMap[key]) {
+      const ex = existingMap[key];
+      duplicates.push({
+        tid: r.tid.trim(),
+        info: `${ex.bucket||'unknown bucket'} — ${ex.sub_type||'draft'} (${ex.status})`
+      });
+      continue;
+    }
     try {
       await conn.execute(
         `INSERT INTO debit_data
            (tid, station_code, debit_date, bucket, loss_sub_bucket, shipment_type,
             cluster, ic_name, amount, confirm_by, cash_recovery_type, cm_confirm,
-            sub_type, remarks, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')
-         ON DUPLICATE KEY UPDATE
-           debit_date=VALUES(debit_date), bucket=VALUES(bucket),
-           loss_sub_bucket=VALUES(loss_sub_bucket), amount=VALUES(amount),
-           cluster=VALUES(cluster), ic_name=VALUES(ic_name),
-           sub_type=VALUES(sub_type)`,
-        [r.tid, r.station, r.impact_date||null, r.loss_bucket||'', r.loss_sub_bucket||null,
-         r.shipment_type||null, r.cluster||null, r.ic_name||null, r.amount||0,
-         r.confirm_by||'', r.cash_recovery_type||null, r.cm_confirm||null, 'New', r.remarks||null]
+            sub_type, remarks, recovery_month, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')`,
+        [r.tid.trim(), r.station.toUpperCase().trim(), r.impact_date||null,
+         r.loss_bucket||'', r.loss_sub_bucket||null, r.shipment_type||null,
+         r.cluster||null, r.ic_name||null, r.amount||0,
+         r.confirm_by||'', r.cash_recovery_type||null, r.cm_confirm||null,
+         'New', r.remarks||null, parseInt(r.recovery_month)||null]
       );
       inserted++;
-    } catch(e2) { skipped++; firstError = firstError || `${e2.message} [tid=${r.tid}]`; }
+    } catch(e2) { invalid.push(`${r.tid} (${e2.message})`); }
   }
   await conn.commit();
   conn.release();
-  res.json({success:true, inserted, skipped, firstError});
+  res.json({success:true, inserted, duplicates, invalid});
 });
 
 app.post('/api/admin/debit-upload', upload.single('file'), async (req, res) => {
@@ -2143,8 +2965,12 @@ app.post('/api/revoke-machine', async (req, res) => {
     res.json({success:true});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
-app.get('/api/enroll-pending', async (req, res) => {
-  try { const [r] = await pool.execute("SELECT * FROM biometric_vault WHERE enroll_status='PENDING' ORDER BY enrolled_at DESC"); res.json(r); }
+app.get('/api/enroll-pending', requireAdminAuth, addCMStations, async (req, res) => {
+  try {
+    const {clause: cmCe, params: cmPe} = cmStationClause(req, 'station_code');
+    const [r] = await pool.execute("SELECT * FROM biometric_vault WHERE enroll_status='PENDING'" + cmCe + " ORDER BY enrolled_at DESC", cmPe);
+    res.json(r);
+  }
   catch(e) { res.status(500).json({error:e.message}); }
 });
 app.get('/api/period-summary/:station', async (req, res) => {
@@ -2163,12 +2989,14 @@ app.get('/api/test-flags',  (req, res) => res.json(testFlags));
 app.post('/api/test-flags', (req, res) => { Object.assign(testFlags, req.body); res.json({success:true}); });
 
 
-app.get('/api/admin/recent-submissions', async (req, res) => {
+app.get('/api/admin/recent-submissions', requireAdminAuth, addCMStations, async (req, res) => {
   try {
+    const {clause: cmC2, params: cmP2} = cmStationClause(req, 'station_code');
     const [r] = await pool.execute(
       `SELECT station_code, module, period_label, status, submitted_at
-       FROM config_status WHERE status='SUBMITTED'
-       ORDER BY submitted_at DESC LIMIT 50`
+       FROM config_status WHERE status='SUBMITTED'` + cmC2 + `
+       ORDER BY submitted_at DESC LIMIT 50`,
+      cmP2
     );
     res.json(r);
   } catch(e) { res.status(500).json({error:e.message}); }
@@ -2196,7 +3024,7 @@ app.post('/api/admin/reset-submission', async (req, res) => {
 
 
 // -- KMS SUMMARY (Admin) ----------------------------------
-app.get('/api/admin/kms-summary', async (req, res) => {
+app.get('/api/admin/kms-summary', requireAdminAuth, addCMStations, async (req, res) => {
   try {
     const {cycleId} = req.query;
     if (!cycleId) return res.status(400).json({error:'cycleId required'});
@@ -2204,22 +3032,23 @@ app.get('/api/admin/kms-summary', async (req, res) => {
     // period_label from active config_period (log_amx has no cycle_id column)
     const periodLabel = (await getActivePeriod()).period_label;
 
+    const {clause: cmC, params: cmP} = cmStationClause(req, 'station_code');
     // Single query: total groups per station for this cycle
     const [totals] = await pool.execute(
       `SELECT station_code, COUNT(DISTINCT CONCAT(amx_id,'_',delivery_date)) AS total
-       FROM edsp_data WHERE cycle_id=? GROUP BY station_code ORDER BY station_code`,
-      [cycleId]
+       FROM edsp_data WHERE cycle_id=?` + cmC + ` GROUP BY station_code ORDER BY station_code`,
+      [cycleId, ...cmP]
     );
     // Single query: submitted groups per station for this period
     const [subs] = await pool.execute(
       `SELECT station_code, COUNT(DISTINCT CONCAT(amx_id,'_',delivery_date)) AS submitted
-       FROM log_amx WHERE period_label=? GROUP BY station_code`,
-      [periodLabel]
+       FROM log_amx WHERE period_label=?` + cmC + ` GROUP BY station_code`,
+      [periodLabel, ...cmP]
     );
     // Single query: KMS submission status per station
     const [statuses] = await pool.execute(
-      `SELECT station_code, status FROM config_status WHERE module='KMS' AND period_label=?`,
-      [periodLabel]
+      `SELECT station_code, status FROM config_status WHERE module='KMS' AND period_label=?` + cmC,
+      [periodLabel, ...cmP]
     );
 
     const subMap = {};
@@ -2279,17 +3108,21 @@ app.post('/api/legacy/sync-tables', async (req, res) => {
           await conn.execute(createSql);
         });
 
-        // Clear and re-insert all rows
+        // Clear and re-insert all rows using chunked bulk INSERT
         await conn.execute(`TRUNCATE TABLE \`${dest}\``);
         const [rows] = await legacyPool.execute(`SELECT * FROM \`${tbl}\``);
         if (rows.length) {
-          const cols = Object.keys(rows[0]).map(c=>`\`${c}\``).join(',');
-          const ph   = Object.keys(rows[0]).map(()=>'?').join(',');
-          for (const row of rows) {
+          const cols    = Object.keys(rows[0]).map(c=>`\`${c}\``).join(',');
+          const phRow   = '(' + Object.keys(rows[0]).map(()=>'?').join(',') + ')';
+          const CHUNK   = 500;
+          for (let i = 0; i < rows.length; i += CHUNK) {
+            const chunk  = rows.slice(i, i + CHUNK);
+            const ph     = chunk.map(()=>phRow).join(',');
+            const values = chunk.flatMap(row => Object.values(row));
             await conn.execute(
-              `INSERT INTO \`${dest}\` (${cols}) VALUES (${ph})`,
-              Object.values(row)
-            ).catch(()=>{}); // skip individual row errors (e.g. FK issues)
+              `INSERT IGNORE INTO \`${dest}\` (${cols}) VALUES ${ph}`,
+              values
+            ).catch(()=>{}); // skip chunk errors (e.g. FK issues)
           }
         }
         results.push({table: dest, rows: rows.length, status:'ok'});
@@ -2438,7 +3271,8 @@ app.get('/api/legacy/leaves', async (req, res) => {
   await addCol("ALTER TABLE debit_data ADD COLUMN published_at DATETIME DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN loss_sub_bucket VARCHAR(100) DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN shipment_type VARCHAR(50) DEFAULT NULL");
-  await addCol("ALTER TABLE debit_data ADD COLUMN ic_name VARCHAR(100) DEFAULT NULL");
+  await addCol("ALTER TABLE debit_data ADD COLUMN ic_name VARCHAR(2000) DEFAULT NULL");
+  try { await pool.execute("ALTER TABLE debit_data MODIFY COLUMN ic_name VARCHAR(2000)"); } catch(e) {}
   await addCol("ALTER TABLE debit_data ADD COLUMN cash_recovery_type VARCHAR(50) DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN cm_confirm VARCHAR(10) DEFAULT NULL");
   await addCol("ALTER TABLE debit_data ADD COLUMN cluster VARCHAR(20) DEFAULT NULL");
@@ -2510,6 +3344,8 @@ app.get('/api/legacy/leaves', async (req, res) => {
 
   // ── petrol_expenses migrations (add columns if table already existed) ──────────
   try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN upload_batch VARCHAR(100)"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE log_amx_history ADD COLUMN period_from DATE DEFAULT NULL"); } catch(e) {}
+  try { await pool.execute("ALTER TABLE log_amx_history ADD COLUMN period_to DATE DEFAULT NULL"); } catch(e) {}
   try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN upload_date DATE"); } catch(e) {}
   try { await pool.execute("ALTER TABLE petrol_expenses ADD COLUMN filename VARCHAR(200)"); } catch(e) {}
   try { await pool.execute("ALTER TABLE petrol_expenses MODIFY COLUMN period_label VARCHAR(60)"); } catch(e) {}
@@ -3285,7 +4121,643 @@ app.get('/api/shift-status-batch/:station', async (req, res) => {
 //  STATIC & ROUTING
 // -------------------------------------------------------
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// ADMIN AUTH — Login, Sessions, Middleware, User Management
+// ════════════════════════════════════════════════════════════════════════════
+
+// Tab permissions per role — what each role can see by default
+const ROLE_TABS = {
+  superadmin:       ['t-ov','t-users','t-machines','t-violations','t-kms','t-advances','t-deb','t-data','t-stations','t-cm','t-legacy','t-test','t-payroll'],
+  ops_admin:        ['t-ov','t-users','t-machines','t-violations','t-kms','t-advances','t-deb','t-data','t-stations','t-cm','t-legacy'],
+  finance:          ['t-ov','t-advances','t-deb','t-legacy','t-payroll'],
+  hr:               ['t-ov','t-users','t-violations','t-advances','t-stations'],
+  viewer:           ['t-ov','t-users','t-violations','t-kms','t-advances','t-deb','t-legacy'],
+  cluster_manager:  ['t-ov','t-users','t-violations','t-kms','t-advances','t-deb'],
+};
+
+// API route permissions — which roles can call which endpoint patterns
+const ROUTE_PERMS = {
+  'GET:/api/admin/stations-list':   ['superadmin','ops_admin','hr'],
+  'POST:/api/admin/legacy-sync':    ['superadmin'],
+  'POST:/api/admin/set-user-access':['superadmin','ops_admin'],
+  'DELETE:/api/admin/debit-data':   ['superadmin','ops_admin','finance'],
+  'GET:/api/admin/payroll-staff':   ['superadmin','finance'],
+  'GET:/api/admin/export':          ['superadmin','ops_admin','finance','hr'],
+};
+
+// ── Helper: get current IST datetime string ──────────────────────────────
+function nowIST() {
+  // Returns current time as IST (UTC+5:30) formatted for MySQL DATETIME
+  const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  return ist.toISOString().replace('T', ' ').substring(0, 19);
+}
+
+// ── Helper: write audit log ────────────────────────────────────────────────
+async function writeAudit(userId, userName, action, entity, entityId, detail, ip) {
+  try {
+    await pool.execute(
+      'INSERT INTO audit_log (user_id,user_name,action,entity,entity_id,detail,ip_address) VALUES (?,?,?,?,?,?,?)',
+      [userId||null, userName||'system', action, entity||null, entityId||null, detail?JSON.stringify(detail):null, ip||null]
+    );
+  } catch(e) { console.error('audit_log write:', e.message); }
+}
+
+// ── Helper: generate session token ────────────────────────────────────────
+function genSessionToken() {
+  const raw = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  return { raw, hash };
+}
+
+
+// ── Helper: get station filter clause + params for CM scoping ─────────────
+function cmStationClause(req, col) {
+  col = col || 'station_code';
+  var stations = req.adminUser && req.adminUser.cm_stations;
+  if (!stations || !stations.length) return { clause: '', params: [] };
+  return {
+    clause: ' AND ' + col + ' IN (' + stations.map(function(){ return '?'; }).join(',') + ')',
+    params: stations
+  };
+}
+
+// ── Auth middleware — validates session cookie ────────────────────────────
+async function requireAdminAuth(req, res, next) {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.status(401).json({ error: 'Not authenticated', redirect: '/admin/login' });
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [rows] = await pool.execute(
+      `SELECT s.id, s.user_id, s.expires_at, s.revoked,
+              u.name, u.email, u.role, u.extra_tabs, u.denied_tabs, u.is_active, u.force_pw_change
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? LIMIT 1`,
+      [hash]
+    );
+    if (!rows.length) return res.status(401).json({ error: 'Invalid session', redirect: '/admin/login' });
+    const s = rows[0];
+    if (s.revoked) return res.status(401).json({ error: 'Session revoked', redirect: '/admin/login' });
+    if (new Date(s.expires_at) < new Date()) return res.status(401).json({ error: 'Session expired', redirect: '/admin/login' });
+    if (!s.is_active) return res.status(403).json({ error: 'Account disabled' });
+    // Slide expiry — update last_seen every 5 min to avoid constant writes
+    const lastSeen = new Date(s.last_seen||0);
+    if ((Date.now() - lastSeen.getTime()) > 5*60*1000) {
+      const newExp = new Date(Date.now() + 8*60*60*1000);
+      await pool.execute('UPDATE admin_sessions SET last_seen=NOW(), expires_at=? WHERE id=?', [newExp, s.id]);
+    }
+    req.adminUser = { id: s.user_id, name: s.name, email: s.email, role: s.role,
+                      extra_tabs: s.extra_tabs, denied_tabs: s.denied_tabs, force_pw_change: s.force_pw_change };
+    req.sessionId = s.id;
+    next();
+  } catch(e) {
+    console.error('requireAdminAuth:', e.message);
+    res.status(500).json({ error: 'Auth error' });
+  }
+}
+
+// ── Helper: get allowed tabs for a user ───────────────────────────────────
+function getUserTabs(user) {
+  let tabs = [...(ROLE_TABS[user.role] || [])];
+  const extra  = Array.isArray(user.extra_tabs)  ? user.extra_tabs  : (user.extra_tabs  ? JSON.parse(user.extra_tabs)  : []);
+  const denied = Array.isArray(user.denied_tabs) ? user.denied_tabs : (user.denied_tabs ? JSON.parse(user.denied_tabs) : []);
+  extra.forEach(function(t){ if (!tabs.includes(t)) tabs.push(t); });
+  denied.forEach(function(t){ tabs = tabs.filter(function(x){ return x !== t; }); });
+  return tabs;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// AUTH ROUTES
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/admin/auth/login ────────────────────────────────────────────
+app.post('/api/admin/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  const ip = req.ip || req.connection.remoteAddress;
+  try {
+    const [rows] = await pool.execute('SELECT * FROM admin_users WHERE email=? LIMIT 1', [email.toLowerCase().trim()]);
+    if (!rows.length) {
+      await writeAudit(null, email, 'login_failed', 'admin_users', null, {reason:'user_not_found'}, ip);
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const user = rows[0];
+    // Check lockout
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      const mins = Math.ceil((new Date(user.locked_until) - Date.now()) / 60000);
+      return res.status(403).json({ error: `Account locked. Try again in ${mins} minute(s).` });
+    }
+    if (!user.is_active) return res.status(403).json({ error: 'Account disabled. Contact admin.' });
+    // Verify password
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) {
+      const attempts = (user.failed_attempts || 0) + 1;
+      const lockUntil = attempts >= 5 ? new Date(Date.now() + 15*60*1000) : null;
+      await pool.execute('UPDATE admin_users SET failed_attempts=?, locked_until=? WHERE id=?', [attempts, lockUntil, user.id]);
+      await writeAudit(user.id, user.name, 'login_failed', 'admin_users', String(user.id), {attempts}, ip);
+      if (lockUntil) return res.status(403).json({ error: 'Too many failed attempts. Account locked for 15 minutes.' });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    // Success — reset failed attempts, create session
+    const { raw, hash } = genSessionToken();
+    const expiresAt = new Date(Date.now() + 8*60*60*1000);
+    const ua = req.headers['user-agent'] || '';
+    await pool.execute(
+      'INSERT INTO admin_sessions (user_id,token_hash,ip_address,user_agent,expires_at) VALUES (?,?,?,?,?)',
+      [user.id, hash, ip, ua.substring(0,300), expiresAt]
+    );
+    await pool.execute('UPDATE admin_users SET failed_attempts=0, locked_until=NULL, last_login=NOW(), last_login_ip=? WHERE id=?', [ip, user.id]);
+    await writeAudit(user.id, user.name, 'login', 'admin_users', String(user.id), {ip, role:user.role}, ip);
+    // Set httpOnly cookie
+    res.cookie('adm_session', raw, {
+      httpOnly: true, secure: false, sameSite: 'lax',
+      maxAge: 8*60*60*1000, path: '/'
+    });
+    res.json({
+      ok: true,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, force_pw_change: user.force_pw_change },
+      tabs: getUserTabs(user),
+      redirect: user.role === 'cluster_manager' ? '/cm' : '/admin'
+    });
+  } catch(e) { console.error('login:', e.message); res.status(500).json({ error: 'Login failed' }); }
+});
+
+// ── POST /api/admin/auth/logout ───────────────────────────────────────────
+app.post('/api/admin/auth/logout', requireAdminAuth, async (req, res) => {
+  await pool.execute('UPDATE admin_sessions SET revoked=1 WHERE id=?', [req.sessionId]);
+  await writeAudit(req.adminUser.id, req.adminUser.name, 'logout', null, null, null, req.ip);
+  res.clearCookie('adm_session', { path: '/' });
+  res.json({ ok: true });
+});
+
+// ── GET /api/admin/auth/me — verify session + return user info ────────────
+app.get('/api/admin/auth/me', requireAdminAuth, addCMStations, async (req, res) => {
+  const u = req.adminUser;
+  res.json({
+    ok: true,
+    user: {
+      id: u.id, name: u.name, email: u.email, role: u.role,
+      force_pw_change: u.force_pw_change,
+      cm_stations: u.cm_stations || null,
+      cm_staff_id: u.cm_staff_id || null
+    },
+    tabs: getUserTabs(u)
+  });
+});
+
+// ── POST /api/admin/auth/change-password ─────────────────────────────────
+app.post('/api/admin/auth/change-password', requireAdminAuth, async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!new_password || new_password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  try {
+    const [rows] = await pool.execute('SELECT password_hash FROM admin_users WHERE id=?', [req.adminUser.id]);
+    if (!rows.length) return res.status(404).json({ error: 'User not found' });
+    // Skip current_password check if force_pw_change
+    if (!req.adminUser.force_pw_change) {
+      const match = await bcrypt.compare(current_password || '', rows[0].password_hash);
+      if (!match) return res.status(401).json({ error: 'Current password incorrect' });
+    }
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.execute('UPDATE admin_users SET password_hash=?, force_pw_change=0 WHERE id=?', [hash, req.adminUser.id]);
+    await writeAudit(req.adminUser.id, req.adminUser.name, 'password_change', 'admin_users', String(req.adminUser.id), null, req.ip);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ADMIN USER MANAGEMENT (superadmin only)
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/admin/users ──────────────────────────────────────────────────
+app.get('/api/admin/users', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id,name,email,role,extra_tabs,denied_tabs,is_active,force_pw_change,last_login,last_login_ip,failed_attempts,locked_until,created_at FROM admin_users ORDER BY name'
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ── GET /api/admin/users/legacy-search — search legacy staff for admin creation
+app.get('/api/admin/users/legacy-search', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  const q = req.query.q || '';
+  if (q.length < 2) return res.json([]);
+  try {
+    const like = '%' + q + '%';
+    const [rows] = await pool.execute(
+      `SELECT s.id, CONCAT(s.fname,' ',s.lname) AS name, s.email, s.mobile,
+              st.station_code, s.user_type
+       FROM staff s
+       LEFT JOIN stations st ON s.store_id = st.legacy_store_id
+       WHERE s.status=0
+         AND (s.fname LIKE ? OR s.lname LIKE ? OR s.email LIKE ?
+              OR CONCAT(s.fname,' ',s.lname) LIKE ? OR s.mobile LIKE ?)
+       ORDER BY s.fname, s.lname
+       LIMIT 20`,
+      [like, like, like, like, like]
+    );
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/admin/users — create user ──────────────────────────────────
+app.post('/api/admin/users', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  const { name, email, password, role, extra_tabs, denied_tabs } = req.body;
+  if (!name || !email || !password || !role) return res.status(400).json({ error: 'name, email, password, role required' });
+  try {
+    const hash = await bcrypt.hash(password, 12);
+    const { cm_staff_id } = req.body;
+    const [r] = await pool.execute(
+      'INSERT INTO admin_users (name,email,password_hash,role,extra_tabs,denied_tabs,force_pw_change,created_by,cm_staff_id) VALUES (?,?,?,?,?,?,1,?,?)',
+      [name.trim(), email.toLowerCase().trim(), hash, role, JSON.stringify(extra_tabs||[]), JSON.stringify(denied_tabs||[]), req.adminUser.id, cm_staff_id||null]
+    );
+    await writeAudit(req.adminUser.id, req.adminUser.name, 'user_create', 'admin_users', String(r.insertId), {name, email, role}, req.ip);
+    res.json({ ok: true, id: r.insertId });
+  } catch(e) {
+    if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/admin/users/:id — update user ─────────────────────────────
+app.patch('/api/admin/users/:id', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  const id = parseInt(req.params.id);
+  // Prevent editing own record (except via change-password)
+  if (id === req.adminUser.id) return res.status(403).json({ error: 'Cannot edit your own account here. Use Change Password.' });
+  const { name, email, role, extra_tabs, denied_tabs, is_active, reset_password } = req.body;
+  try {
+    if (reset_password) {
+      if (reset_password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      const hash = await bcrypt.hash(reset_password, 12);
+      await pool.execute('UPDATE admin_users SET password_hash=?, force_pw_change=1 WHERE id=?', [hash, id]);
+      await writeAudit(req.adminUser.id, req.adminUser.name, 'password_reset', 'admin_users', String(id), null, req.ip);
+    }
+    await pool.execute(
+      'UPDATE admin_users SET name=COALESCE(?,name), email=COALESCE(?,email), role=COALESCE(?,role), extra_tabs=COALESCE(?,extra_tabs), denied_tabs=COALESCE(?,denied_tabs), is_active=COALESCE(?,is_active) WHERE id=?',
+      [name||null, email?email.toLowerCase().trim():null, role||null,
+       extra_tabs!==undefined?JSON.stringify(extra_tabs):null,
+       denied_tabs!==undefined?JSON.stringify(denied_tabs):null,
+       is_active!==undefined?is_active:null, id]
+    );
+    await writeAudit(req.adminUser.id, req.adminUser.name, 'user_edit', 'admin_users', String(id), req.body, req.ip);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DELETE /api/admin/users/:id/sessions — revoke all sessions ───────────
+app.delete('/api/admin/users/:id/sessions', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  await pool.execute('UPDATE admin_sessions SET revoked=1 WHERE user_id=?', [req.params.id]);
+  await writeAudit(req.adminUser.id, req.adminUser.name, 'sessions_revoked', 'admin_users', req.params.id, null, req.ip);
+  res.json({ ok: true });
+});
+
+
+// ── POST /api/admin/users/import — bulk import from CSV ──────────────────
+app.post('/api/admin/users/import', requireAdminAuth, async (req, res) => {
+  if (req.adminUser.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
+  const { users } = req.body;
+  if (!Array.isArray(users) || !users.length) return res.status(400).json({ error: 'No users provided' });
+
+  const validRoles = ['superadmin','ops_admin','finance','hr','viewer'];
+  let created = 0, updated = 0;
+  const errors = [];
+
+  for (const u of users) {
+    if (!u.name || !u.email || !u.password || !u.role) { errors.push('Missing fields for ' + (u.email||'unknown')); continue; }
+    if (!validRoles.includes(u.role)) { errors.push('Invalid role for ' + u.email); continue; }
+    if (u.password.length < 8) { errors.push('Password too short for ' + u.email); continue; }
+    try {
+      const hash = await bcrypt.hash(u.password, 12);
+      const extra  = JSON.stringify(Array.isArray(u.extra_tabs)  ? u.extra_tabs  : []);
+      const denied = JSON.stringify(Array.isArray(u.denied_tabs) ? u.denied_tabs : []);
+      // Try insert — if duplicate email, update instead
+      const [existing] = await pool.execute('SELECT id FROM admin_users WHERE email=?', [u.email.toLowerCase().trim()]);
+      if (existing.length) {
+        await pool.execute(
+          'UPDATE admin_users SET name=?, password_hash=?, role=?, extra_tabs=?, denied_tabs=?, force_pw_change=1 WHERE id=?',
+          [u.name.trim(), hash, u.role, extra, denied, existing[0].id]
+        );
+        updated++;
+      } else {
+        await pool.execute(
+          'INSERT INTO admin_users (name,email,password_hash,role,extra_tabs,denied_tabs,force_pw_change,created_by) VALUES (?,?,?,?,?,?,1,?)',
+          [u.name.trim(), u.email.toLowerCase().trim(), hash, u.role, extra, denied, req.adminUser.id]
+        );
+        created++;
+      }
+    } catch(e) {
+      errors.push('Error for ' + u.email + ': ' + e.message);
+    }
+  }
+  await writeAudit(req.adminUser.id, req.adminUser.name, 'bulk_import_users', 'admin_users', null,
+    {created, updated, errors: errors.length}, req.ip);
+  res.json({ created, updated, errors });
+});
+
+// ── GET /api/admin/audit-log ──────────────────────────────────────────────
+app.get('/api/admin/audit-log', requireAdminAuth, async (req, res) => {
+  if (!['superadmin','ops_admin'].includes(req.adminUser.role)) return res.status(403).json({ error: 'Not authorized' });
+  try {
+    const { user_id, action, limit: lim } = req.query;
+    let sql = 'SELECT * FROM audit_log WHERE 1=1';
+    const p = [];
+    if (user_id) { sql += ' AND user_id=?'; p.push(user_id); }
+    if (action)  { sql += ' AND action=?'; p.push(action); }
+    sql += ' ORDER BY created_at DESC LIMIT ' + (parseInt(lim)||200);
+    const [rows] = await pool.execute(sql, p);
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Serve static files but block direct access to admin.html
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// CM ATTENDANCE ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/cm/punch — clock in/out from mobile or laptop ──────────────
+app.post('/api/cm/punch', async (req, res) => {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.status(401).json({ error: 'Not authenticated' });
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [sess] = await pool.execute(
+      `SELECT u.id, u.name, u.cm_staff_id, u.role, s.expires_at, s.revoked
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? AND s.revoked=0 AND s.expires_at>NOW() LIMIT 1`, [hash]
+    );
+    if (!sess.length || sess[0].role !== 'cluster_manager')
+      return res.status(403).json({ error: 'Not a cluster manager' });
+    const cm = sess[0];
+    if (!cm.cm_staff_id) return res.status(400).json({ error: 'No staff record linked' });
+
+    const { station_code, punch_type, latitude, longitude, location_accuracy } = req.body;
+    if (!station_code) return res.status(400).json({ error: 'station_code required' });
+    if (!['CLOCK_IN','CLOCK_OUT'].includes(punch_type))
+      return res.status(400).json({ error: 'punch_type must be CLOCK_IN or CLOCK_OUT' });
+
+    // Verify station is assigned to this CM
+    const [stCheck] = await pool.execute(
+      'SELECT station_code FROM stations WHERE primary_cluster_manager=? AND LOWER(station_code)=LOWER(?) AND is_delete=0',
+      [cm.cm_staff_id, station_code]
+    );
+    if (!stCheck.length) return res.status(403).json({ error: 'Station not in your scope' });
+
+    // Determine source from accuracy
+    let source = 'MOBILE';
+    if (!latitude || !longitude) source = 'LAPTOP';
+    else if (location_accuracy && location_accuracy > 500) source = 'LAPTOP';
+
+    const ip = req.ip || req.connection.remoteAddress;
+    await pool.execute(
+      `INSERT INTO cm_attendance (cm_staff_id, cm_name, station_code, punch_type, punched_at, source, ip_address, latitude, longitude, location_accuracy)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [cm.cm_staff_id, cm.name, stCheck[0].station_code, punch_type, nowIST(), source, ip,
+       latitude||null, longitude||null, location_accuracy||null]
+    );
+
+    await writeAudit(cm.id, cm.name, 'cm_attendance', 'cm_attendance', null,
+      {punch_type, station_code, source}, ip);
+    res.json({ ok: true, punch_type, station_code, source });
+  } catch(e) { console.error('cm/punch:', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/cm/wh-punch — clock in/out from WH machine (CM session + machine token) ──
+app.post('/api/cm/wh-punch', async (req, res) => {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.status(401).json({ error: 'Not authenticated' });
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [sess] = await pool.execute(
+      `SELECT u.id, u.name, u.cm_staff_id, u.role, s.expires_at, s.revoked
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? AND s.revoked=0 AND s.expires_at>NOW() LIMIT 1`, [hash]
+    );
+    if (!sess.length || sess[0].role !== 'cluster_manager')
+      return res.status(403).json({ error: 'Not a cluster manager' });
+    const cm = sess[0];
+    if (!cm.cm_staff_id) return res.status(400).json({ error: 'No staff record linked' });
+
+    const { station_code, punch_type, machine_id } = req.body;
+    if (!station_code || !punch_type || !machine_id)
+      return res.status(400).json({ error: 'station_code, punch_type, machine_id required' });
+
+    // Verify machine belongs to this station
+    const [mach] = await pool.execute(
+      'SELECT machine_id, station_code FROM config_machines WHERE machine_id=? AND LOWER(station_code)=LOWER(?) AND status="ACTIVE"',
+      [machine_id, station_code]
+    );
+    if (!mach.length) return res.status(403).json({ error: 'Invalid machine for this station' });
+
+    const ip = req.ip || req.connection.remoteAddress;
+    await pool.execute(
+      `INSERT INTO cm_attendance (cm_staff_id, cm_name, station_code, punch_type, punched_at, source, machine_id, ip_address)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [cm.cm_staff_id, cm.name, station_code, punch_type, nowIST(), 'WH_MACHINE', machine_id, ip]
+    );
+
+    await writeAudit(cm.id, cm.name, 'cm_attendance_wh', 'cm_attendance', null,
+      {punch_type, station_code, machine_id}, ip);
+    res.json({ ok: true, punch_type, station_code, source: 'WH_MACHINE' });
+  } catch(e) { console.error('cm/wh-punch:', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/cm/attendance-today — today's CM attendance ─────────────────
+app.get('/api/cm/attendance-today', requireAdminAuth, async (req, res) => {
+  try {
+    // Default to IST date (UTC+5:30) if not provided
+  const date = req.query.date || nowIST().split(' ')[0];
+    // CM can see their own; ops_admin/superadmin can see all or by station
+    let sql, params;
+    if (req.adminUser.role === 'cluster_manager') {
+      const [userRow] = await pool.execute('SELECT cm_staff_id FROM admin_users WHERE id=?', [req.adminUser.id]);
+      const staffId = userRow.length ? userRow[0].cm_staff_id : null;
+      if (!staffId) return res.json([]);
+      sql = `SELECT * FROM cm_attendance WHERE cm_staff_id=? AND DATE(punched_at)=? ORDER BY punched_at`;
+      params = [staffId, date];
+    } else if (['superadmin','ops_admin'].includes(req.adminUser.role)) {
+      const { station, cm_staff_id } = req.query;
+      sql = `SELECT * FROM cm_attendance WHERE DATE(punched_at)=?`;
+      params = [date];
+      if (station)     { sql += ' AND station_code=?'; params.push(station); }
+      if (cm_staff_id) { sql += ' AND cm_staff_id=?';  params.push(cm_staff_id); }
+      sql += ' ORDER BY punched_at';
+    } else {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    const [rows] = await pool.execute(sql, params);
+    res.json(rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/cm/attendance-summary — all CMs attendance for overview ──────
+app.get('/api/cm/attendance-summary', async (req, res) => {
+  // Inline auth check (same pattern as attendance-overview)
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.status(401).json({ error: 'Not authenticated' });
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [srows] = await pool.execute(
+      `SELECT u.id, u.role, u.is_active, s.expires_at, s.revoked
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? AND s.revoked=0 AND s.expires_at>NOW() LIMIT 1`, [hash]
+    );
+    if (!srows.length || !srows[0].is_active) return res.status(401).json({ error: 'Invalid session' });
+    if (!['superadmin','ops_admin'].includes(srows[0].role))
+      return res.status(403).json({ error: 'Not authorized' });
+  } catch(e) { return res.status(500).json({ error: e.message }); }
+  try {
+    // Default to IST date (UTC+5:30) if not provided
+  const date = req.query.date || nowIST().split(' ')[0];
+    // Get all CMs with their punches today
+    const [rows] = await pool.execute(
+      `SELECT a.cm_staff_id, a.cm_name,
+              GROUP_CONCAT(DISTINCT a.station_code ORDER BY a.punched_at SEPARATOR ',') AS stations_visited,
+              MIN(CASE WHEN a.punch_type='CLOCK_IN' THEN a.punched_at END) AS first_in,
+              MAX(CASE WHEN a.punch_type='CLOCK_OUT' THEN a.punched_at END) AS last_out,
+              SUM(CASE WHEN a.punch_type='CLOCK_IN' THEN 1 ELSE 0 END) AS clock_ins,
+              GROUP_CONCAT(DISTINCT a.source ORDER BY a.punched_at SEPARATOR ',') AS sources
+       FROM cm_attendance a
+       WHERE DATE(a.punched_at)=?
+       GROUP BY a.cm_staff_id, a.cm_name
+       ORDER BY a.cm_name`,
+      [date]
+    );
+    // Also get CMs with no punches today
+    const [allCMs] = await pool.execute(
+      `SELECT s.id AS cm_staff_id, TRIM(CONCAT(COALESCE(s.fname,''),' ',COALESCE(s.lname,''))) AS cm_name,
+              GROUP_CONCAT(DISTINCT st.station_code ORDER BY st.station_code SEPARATOR ',') AS assigned_stations
+       FROM staff s
+       LEFT JOIN stations st ON st.primary_cluster_manager=s.id AND st.is_delete=0 AND st.status=0
+       WHERE s.user_type=5 AND s.status=0 AND s.is_delete=0
+       GROUP BY s.id`
+    );
+    const attendMap = {};
+    rows.forEach(function(r){ attendMap[r.cm_staff_id] = r; });
+    const result = allCMs.map(function(cm) {
+      const att = attendMap[cm.cm_staff_id] || {};
+      return {
+        cm_staff_id:       cm.cm_staff_id,
+        cm_name:           cm.cm_name,
+        assigned_stations: cm.assigned_stations || '',
+        stations_visited:  att.stations_visited || '',
+        first_in:          att.first_in || null,
+        last_out:          att.last_out || null,
+        clock_ins:         att.clock_ins || 0,
+        sources:           att.sources || '',
+        present:           !!att.first_in
+      };
+    });
+    res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CM PORTAL — Landing page + WH bypass routes
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /cm — CM landing page (pick Admin or WH)
+app.get('/cm', async (req, res) => {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.redirect('/admin/login');
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.role, u.is_active, s.expires_at, s.revoked
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? LIMIT 1`, [hash]
+    );
+    if (!rows.length || rows[0].revoked || new Date(rows[0].expires_at)<new Date() || !rows[0].is_active)
+      return res.redirect('/admin/login');
+    if (rows[0].role !== 'cluster_manager')
+      return res.redirect('/admin'); // non-CM admins go straight to admin
+    res.sendFile(path.join(__dirname,'public','cm_landing.html'));
+  } catch(e) { res.redirect('/admin/login'); }
+});
+
+// ── POST /api/cm/wh-token — CM requests a short-lived WH token for a station
+app.post('/api/cm/wh-token', async (req, res) => {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.status(401).json({ error: 'Not authenticated' });
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.role, u.cm_staff_id, s.expires_at, s.revoked, u.is_active
+       FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id
+       WHERE s.token_hash=? LIMIT 1`, [hash]
+    );
+    if (!rows.length || rows[0].revoked || new Date(rows[0].expires_at)<new Date() || !rows[0].is_active)
+      return res.status(401).json({ error: 'Invalid session' });
+    if (rows[0].role !== 'cluster_manager')
+      return res.status(403).json({ error: 'Not a cluster manager' });
+
+    const { station } = req.body;
+    if (!station) return res.status(400).json({ error: 'station required' });
+
+    // Verify station belongs to this CM
+    const [stRows] = await pool.execute(
+      'SELECT station_code FROM stations WHERE primary_cluster_manager=? AND LOWER(station_code)=LOWER(?) AND is_delete=0 AND status=0',
+      [rows[0].cm_staff_id, station]
+    );
+    if (!stRows.length) return res.status(403).json({ error: 'Station not in your scope' });
+
+    // Generate a short-lived one-time token (15 min)
+    const token = crypto.randomBytes(24).toString('hex');
+    const expires = new Date(Date.now() + 15*60*1000);
+    await pool.execute(
+      'INSERT INTO cm_wh_tokens (token, admin_user_id, station_code, expires_at) VALUES (?,?,?,?)',
+      [token, rows[0].id, stRows[0].station_code, expires]
+    );
+    res.json({ ok: true, token, station: stRows[0].station_code });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/cm/verify-wh-token — WH portal calls this to verify CM token
+app.get('/api/cm/verify-wh-token', async (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.json({ valid: false });
+  try {
+    const [rows] = await pool.execute(
+      'SELECT station_code, admin_user_id FROM cm_wh_tokens WHERE token=? AND used=0 AND expires_at>NOW()',
+      [token]
+    );
+    if (!rows.length) return res.json({ valid: false });
+    // Mark token as used
+    await pool.execute('UPDATE cm_wh_tokens SET used=1 WHERE token=?', [token]);
+    res.json({ valid: true, station: rows[0].station_code, isCM: true });
+  } catch(e) { res.json({ valid: false }); }
+});
+
+app.use(function(req, res, next) {
+  var url = req.path.toLowerCase();
+  // Block direct URL access to admin HTML — must go through /admin route (auth check)
+  if (url === '/admin.html' || url === '/admin_login.html') {
+    return res.redirect('/admin/login');
+  }
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/admin', (req,res) => res.sendFile(path.join(__dirname,'public','admin.html')));
+app.get('/admin/login', (req,res) => res.sendFile(path.join(__dirname,'public','admin_login.html')));
+app.get('/admin', async (req,res) => {
+  try {
+    const raw = req.cookies && req.cookies.adm_session;
+    if (!raw) return res.redirect('/admin/login');
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    const [rows] = await pool.execute(
+      'SELECT s.revoked, s.expires_at, u.is_active FROM admin_sessions s JOIN admin_users u ON s.user_id=u.id WHERE s.token_hash=? LIMIT 1',
+      [hash]
+    );
+    if (!rows.length || rows[0].revoked || new Date(rows[0].expires_at)<new Date() || !rows[0].is_active)
+      return res.redirect('/admin/login');
+    res.sendFile(path.join(__dirname,'public','admin.html'));
+  } catch(e) { res.redirect('/admin/login'); }
+});
 app.get('*',     (req,res) => res.sendFile(path.join(__dirname,'public','index.html')));
 module.exports = app;

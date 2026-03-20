@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShipLocal — Cluster Manager Portal</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --navy:#0f2744;--blue:#2563eb;--blue-bg:#eff6ff;
+    --border:#e2e8f0;--bg:#f1f5f9;--card:#fff;
+    --text:#1e293b;--text-2:#475569;--text-3:#94a3b8;
+    --green:#10b981;--green-d:#059669;--green-bg:#f0fdf4;
+    --shadow:0 1px 3px rgba(0,0,0,.08),0 4px 16px rgba(0,0,0,.08);
+    --r:14px;
+  }
+  body{min-height:100vh;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'DM Sans',system-ui,sans-serif;color:var(--text);padding:72px 24px 24px}
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+  .brand{text-align:center;margin-bottom:36px}
+  .brand-icon{width:56px;height:56px;background:var(--navy);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:1.6rem;margin-bottom:12px}
+  .brand-name{font-size:1.2rem;font-weight:700;color:var(--navy)}
+  .brand-sub{font-size:.82rem;color:var(--text-3);margin-top:3px}
+  .user-badge{display:inline-flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:20px;padding:6px 14px;font-size:.82rem;color:var(--text-2);margin-top:10px}
+  .user-badge strong{color:var(--navy)}
+
+  .cards{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;max-width:680px;width:100%;margin-bottom:28px}
+
+  .portal-card{
+    flex:1;min-width:260px;max-width:300px;
+    background:var(--card);border:2px solid var(--border);border-radius:var(--r);
+    padding:28px 24px;cursor:pointer;text-align:center;
+    box-shadow:var(--shadow);
+    transition:border-color .2s, transform .15s, box-shadow .2s;
+  }
+  .portal-card:hover{border-color:var(--navy);transform:translateY(-3px);box-shadow:0 8px 32px rgba(0,0,0,.12)}
+  .portal-card.admin:hover{border-color:var(--navy)}
+  .portal-card.wh:hover{border-color:var(--green-d);background:var(--green-bg)}
+
+  .card-icon{font-size:2.8rem;margin-bottom:14px;display:block}
+  .card-title{font-size:1.1rem;font-weight:700;color:var(--navy);margin-bottom:6px}
+  .card-sub{font-size:.82rem;color:var(--text-2);line-height:1.5;margin-bottom:16px}
+  .card-btn{
+    display:inline-block;padding:10px 24px;border-radius:9px;font-size:.88rem;font-weight:700;
+    border:none;cursor:pointer;font-family:inherit;transition:opacity .15s;width:100%
+  }
+  .admin .card-btn{background:var(--navy);color:#fff}
+  .wh .card-btn{background:var(--green-d);color:#fff}
+  .card-btn:hover{opacity:.88}
+
+  .stations-badge{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-bottom:14px}
+  .st-pill{padding:2px 8px;border-radius:5px;font-size:.72rem;font-weight:600;background:var(--blue-bg);color:var(--blue)}
+
+  .sign-out{font-size:.78rem;color:var(--text-3);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+  .sign-out:hover{color:var(--text-2)}
+
+  /* WH station picker overlay */
+  .st-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;align-items:center;justify-content:center;padding:20px}
+  .st-overlay.show{display:flex}
+  .st-modal{background:#fff;border-radius:var(--r);padding:28px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+  .st-modal h2{font-size:.95rem;font-weight:700;color:var(--navy);margin-bottom:4px}
+  .st-modal p{font-size:.82rem;color:var(--text-2);margin-bottom:18px}
+  .st-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+  .st-btn{padding:12px 8px;border-radius:9px;border:2px solid var(--border);background:var(--bg);cursor:pointer;font-size:.85rem;font-weight:600;color:var(--navy);transition:border-color .15s,background .15s;font-family:inherit}
+  .st-btn:hover{border-color:var(--green-d);background:var(--green-bg);color:var(--green-d)}
+  .st-cancel{width:100%;padding:9px;border:1.5px solid var(--border);border-radius:9px;background:none;cursor:pointer;font-size:.84rem;color:var(--text-2);font-family:inherit}
+  .loading{text-align:center;padding:12px;color:var(--text-3);font-size:.84rem}
+</style>
+</head>
+<body>
+<div style="position:fixed;top:0;left:0;right:0;height:48px;background:#fff;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="font-size:1.1rem">🗺</span>
+    <span style="font-weight:700;color:#0f2744;font-size:.9rem">ShipLocal CM Portal</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span id="hd-user" style="font-size:.8rem;color:#475569">—</span>
+    <button onclick="signOut()" style="padding:5px 14px;font-size:.78rem;font-weight:600;border:1.5px solid #e2e8f0;border-radius:8px;background:none;cursor:pointer;color:#475569;font-family:inherit">Sign Out</button>
+  </div>
+</div>
+
+<div class="brand">
+  <div class="brand-icon">🗺</div>
+  <div class="brand-name">ShipLocal — Cluster Manager</div>
+  <div class="brand-sub">Choose how you'd like to work today</div>
+  <div class="user-badge">
+    <span>👤</span>
+    <span id="user-name">Loading…</span>
+    <span style="color:var(--text-3)">·</span>
+    <span id="station-count" style="color:var(--blue)">— stations</span>
+  </div>
+</div>
+
+<div class="cards">
+  <!-- Admin Portal Card -->
+  <div class="portal-card admin" onclick="goAdmin()">
+    <span class="card-icon">⚙️</span>
+    <div class="card-title">Admin Portal</div>
+    <div class="card-sub">View attendance, violations, advances, debit notes and reports across all your stations.</div>
+    <button class="card-btn">Open Admin Portal →</button>
+  </div>
+
+  <!-- WH Portal Card -->
+  <div class="portal-card wh" onclick="openStationPicker()">
+    <span class="card-icon">🏭</span>
+    <div class="card-title">Warehouse Portal</div>
+    <div class="card-sub">Act as a station — submit advances, respond to debit notes, manage KMS and attendance.</div>
+    <div class="stations-badge" id="st-pills"></div>
+    <button class="card-btn">Open Warehouse Portal →</button>
+  </div>
+</div>
+
+<!-- My Attendance Today -->
+<div style="width:100%;max-width:680px;background:var(--card);border:1.5px solid var(--border);border-radius:var(--r);padding:20px 24px;margin-bottom:24px;box-shadow:var(--shadow)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <div>
+      <div style="font-weight:700;font-size:.95rem;color:var(--navy)">📋 My Attendance Today</div>
+      <div style="font-size:.78rem;color:var(--text-3);margin-top:2px" id="att-date">—</div>
+    </div>
+    <button onclick="loadMyAttendance()" style="padding:4px 10px;font-size:.75rem;border:1.5px solid var(--border);border-radius:7px;background:none;cursor:pointer;color:var(--text-2);font-family:inherit">↻ Refresh</button>
+  </div>
+  <div id="att-station-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:16px">
+    <div style="text-align:center;padding:16px;color:var(--text-3);font-size:.82rem;grid-column:1/-1">Loading…</div>
+  </div>
+  <div id="att-punch-area" style="border-top:1px solid var(--border);padding-top:14px">
+    <div style="font-size:.8rem;font-weight:600;color:var(--text-2);margin-bottom:10px">📱 Mobile / Laptop Check-in</div>
+    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <label style="font-size:.75rem;color:var(--text-3);display:block;margin-bottom:4px">Station</label>
+        <select id="att-station-sel" style="width:100%;padding:8px 10px;font-size:.84rem;border:1.5px solid var(--border);border-radius:8px;font-family:inherit">
+          <option value="">Select station…</option>
+        </select>
+      </div>
+      <button id="btn-clock-in" onclick="doPunch('CLOCK_IN')" style="padding:9px 20px;font-size:.84rem;font-weight:700;border:none;border-radius:8px;background:var(--green-d);color:#fff;cursor:pointer;font-family:inherit">🟢 Clock In</button>
+      <button id="btn-clock-out" onclick="doPunch('CLOCK_OUT')" style="padding:9px 20px;font-size:.84rem;font-weight:700;border:none;border-radius:8px;background:#dc2626;color:#fff;cursor:pointer;font-family:inherit">🔴 Clock Out</button>
+    </div>
+    <div id="att-punch-status" style="margin-top:8px;font-size:.78rem;min-height:18px"></div>
+  </div>
+</div>
+
+<!-- Station Picker Modal -->
+<div class="st-overlay" id="st-overlay">
+  <div class="st-modal">
+    <h2>🏭 Select Station</h2>
+    <p>Choose which station you want to act as in the Warehouse Portal.</p>
+    <div class="st-list" id="st-list">
+      <div class="loading">Loading stations…</div>
+    </div>
+    <button class="st-cancel" onclick="closeStationPicker()">Cancel</button>
+  </div>
+</div>
+
+<script>
+var _cmUser = null;
+var _cmStations = [];
+
+async function init() {
+  try {
+    var r = await fetch('/api/admin/auth/me', {credentials:'include'});
+    if (!r.ok) { window.location.href = '/admin/login'; return; }
+    var d = await r.json();
+    if (d.user.role !== 'cluster_manager') { window.location.href = '/admin'; return; }
+    _cmUser = d.user;
+    _cmStations = d.user.cm_stations || [];
+
+    document.getElementById('user-name').textContent = d.user.name;
+    var hdUser = document.getElementById('hd-user');
+    if (hdUser) hdUser.textContent = d.user.name + ' · Cluster Manager';
+    document.getElementById('station-count').textContent = _cmStations.length + ' station' + (_cmStations.length !== 1 ? 's' : '');
+
+    // Station pills
+    var pillsEl = document.getElementById('st-pills');
+    pillsEl.innerHTML = _cmStations.map(function(s) {
+      return '<span class="st-pill">' + s + '</span>';
+    }).join('');
+
+    // Station list in modal
+    var listEl = document.getElementById('st-list');
+    if (_cmStations.length) {
+      listEl.innerHTML = _cmStations.map(function(s) {
+        return '<button class="st-btn" onclick="selectStation(\'' + s + '\')">' + s + '</button>';
+      }).join('');
+    } else {
+      listEl.innerHTML = '<div style="grid-column:span 2;color:var(--text-3);font-size:.82rem;text-align:center">No stations assigned yet</div>';
+    }
+  } catch(e) {
+    window.location.href = '/admin/login';
+  }
+}
+
+function goAdmin() {
+  window.location.href = '/admin';
+}
+
+function openStationPicker() {
+  document.getElementById('st-overlay').classList.add('show');
+}
+
+function closeStationPicker() {
+  document.getElementById('st-overlay').classList.remove('show');
+}
+
+async function selectStation(station) {
+  var btn = event.target;
+  btn.textContent = 'Loading…';
+  btn.disabled = true;
+  try {
+    var r = await fetch('/api/cm/wh-token', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      credentials: 'include',
+      body: JSON.stringify({station: station})
+    });
+    var d = await r.json();
+    if (r.ok && d.token) {
+      // Open WH portal with CM token
+      window.location.href = '/?cm_token=' + d.token + '&cm_station=' + encodeURIComponent(station);
+    } else {
+      alert('Failed to access station: ' + (d.error || 'unknown error'));
+      btn.textContent = station;
+      btn.disabled = false;
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+    btn.textContent = station;
+    btn.disabled = false;
+  }
+}
+
+async function signOut() {
+  await fetch('/api/admin/auth/logout', {method:'POST', credentials:'include'});
+  window.location.href = '/admin/login';
+}
+
+// Close overlay on background click
+document.getElementById('st-overlay').onclick = function(e) {
+  if (e.target === this) closeStationPicker();
+};
+
+init();
+
+// ── ATTENDANCE ────────────────────────────────────────────────────────────
+async function loadMyAttendance() {
+  var d = new Date(); var today = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  document.getElementById('att-date').textContent = new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+
+  // Populate station selector
+  var sel = document.getElementById('att-station-sel');
+  if (_cmStations.length && sel.options.length <= 1) {
+    _cmStations.forEach(function(sc) {
+      var opt = document.createElement('option');
+      opt.value = sc; opt.textContent = sc;
+      sel.appendChild(opt);
+    });
+  }
+
+  try {
+    var r = await fetch('/api/cm/attendance-today?date=' + today, {credentials:'include'});
+    var punches = await r.json();
+    renderAttendanceCards(punches);
+  } catch(e) {
+    document.getElementById('att-station-list').innerHTML =
+      '<div style="color:var(--red-d);font-size:.82rem;grid-column:1/-1">Error loading attendance</div>';
+  }
+}
+
+function renderAttendanceCards(punches) {
+  var list = document.getElementById('att-station-list');
+  if (!_cmStations.length) { list.innerHTML = '<div style="color:var(--text-3);font-size:.82rem;grid-column:1/-1">No stations assigned</div>'; return; }
+
+  var stMap = {};
+  _cmStations.forEach(function(sc) { stMap[sc] = {in: null, out: null, punches: []}; });
+  punches.forEach(function(p) {
+    if (!stMap[p.station_code]) return;
+    stMap[p.station_code].punches.push(p);
+    if (p.punch_type === 'CLOCK_IN' && !stMap[p.station_code].in) stMap[p.station_code].in = p;
+    if (p.punch_type === 'CLOCK_OUT') stMap[p.station_code].out = p;
+  });
+
+  var html = _cmStations.map(function(sc) {
+    var s = stMap[sc];
+    var hasIn  = !!s.in;
+    var hasOut = !!s.out;
+    var srcIcon = !hasIn ? '' : (s.in.source === 'WH_MACHINE' ? '🏭' : s.in.source === 'MOBILE' ? '📱' : '💻');
+    var timeIn  = hasIn  ? new Date(s.in.punched_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '—';
+    var timeOut = hasOut ? new Date(s.out.punched_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '—';
+    var statusColor = hasIn && !hasOut ? 'var(--green-d)' : hasIn && hasOut ? 'var(--navy)' : 'var(--text-3)';
+    var statusText  = hasIn && !hasOut ? '● Active' : hasIn && hasOut ? '✓ Done' : 'Not visited';
+    return '<div style="padding:10px 12px;border-radius:9px;border:1.5px solid var(--border);background:var(--bg)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
+        '<span style="font-weight:700;font-size:.85rem;color:var(--navy)">' + sc + '</span>' +
+        '<span style="font-size:.72rem;font-weight:600;color:' + statusColor + '">' + srcIcon + ' ' + statusText + '</span>' +
+      '</div>' +
+      '<div style="font-size:.75rem;color:var(--text-2);display:flex;gap:12px">' +
+        '<span>In: <strong>' + timeIn + '</strong></span>' +
+        '<span>Out: <strong>' + timeOut + '</strong></span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  list.innerHTML = html;
+}
+
+async function doPunch(punchType) {
+  var station = document.getElementById('att-station-sel').value;
+  var statusEl = document.getElementById('att-punch-status');
+  if (!station) { statusEl.textContent = '⚠ Please select a station first'; statusEl.style.color = 'var(--amber-d,#b45309)'; return; }
+
+  var btnIn  = document.getElementById('btn-clock-in');
+  var btnOut = document.getElementById('btn-clock-out');
+  btnIn.disabled = btnOut.disabled = true;
+  statusEl.textContent = 'Getting location…';
+  statusEl.style.color = 'var(--text-3)';
+
+  // Get geolocation
+  var lat = null, lng = null, acc = null;
+  try {
+    var pos = await new Promise(function(resolve, reject) {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {timeout:8000, enableHighAccuracy:true});
+    });
+    lat = pos.coords.latitude;
+    lng = pos.coords.longitude;
+    acc = pos.coords.accuracy;
+  } catch(e) {
+    // Location denied or unavailable — still allow punch but flag as LAPTOP
+    statusEl.textContent = 'Location unavailable — punching without GPS…';
+  }
+
+  try {
+    statusEl.textContent = 'Recording…';
+    var r = await fetch('/api/cm/punch', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      credentials: 'include',
+      body: JSON.stringify({station_code: station, punch_type: punchType, latitude: lat, longitude: lng, location_accuracy: acc})
+    });
+    var d = await r.json();
+    if (r.ok) {
+      var srcLabel = d.source === 'WH_MACHINE' ? '🏭 WH Machine' : d.source === 'MOBILE' ? '📱 Mobile' : '💻 Laptop';
+      statusEl.textContent = '✅ ' + (punchType === 'CLOCK_IN' ? 'Clocked In' : 'Clocked Out') + ' at ' + station + ' · ' + srcLabel;
+      statusEl.style.color = 'var(--green-d)';
+      loadMyAttendance();
+    } else {
+      statusEl.textContent = '❌ ' + (d.error || 'Failed');
+      statusEl.style.color = 'var(--red-d)';
+    }
+  } catch(e) {
+    statusEl.textContent = '❌ Network error';
+    statusEl.style.color = 'var(--red-d)';
+  }
+  btnIn.disabled = btnOut.disabled = false;
+}
+
+// Load attendance when page loads (after init sets _cmStations)
+var _attInitCheck = setInterval(function() {
+  if (_cmStations.length) {
+    clearInterval(_attInitCheck);
+    loadMyAttendance();
+  }
+}, 200);
+
+</script>
+</body>
+</html>

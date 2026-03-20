@@ -1,96 +1,35 @@
 // ── Payroll Tab — restricted access ─────────────────────────────────────────
 
+// ── Universal header-name-based column mapper ─────────────────────────────────
+// Converts a header row into a lookup function so parsers find columns by name
+// regardless of column position. Case-insensitive, punctuation-stripped matching.
+// Usage:
+//   const col = makeColMap(raw[0], { bank_transfer: ['Bank transfer RS','Bank Transfer','BANK_TRANSFER'] });
+//   const bankIdx = col('bank_transfer');  // → column index or null
+//   const val = bankIdx !== null ? num(row[bankIdx]) : 0;
+function makeColMap(headerRow, aliases) {
+  var norm = function(s) { return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,''); };
+  var hdrMap = {};
+  (headerRow||[]).forEach(function(h, i) { if (h != null) hdrMap[norm(h)] = i; });
+  var colMap = {};
+  Object.keys(aliases).forEach(function(canonical) {
+    var variants = Array.isArray(aliases[canonical]) ? aliases[canonical] : [aliases[canonical]];
+    for (var v = 0; v < variants.length; v++) {
+      var n = norm(variants[v]);
+      if (hdrMap[n] !== undefined) { colMap[canonical] = hdrMap[n]; break; }
+    }
+  });
+  return function(key) { return colMap[key] !== undefined ? colMap[key] : null; };
+}
+
+
 let _payrollClickCount = 0;
 let _payrollClickTimer = null;
-let _payrollUnlocked = false;
+let _payrollUnlocked = true; // Now controlled by admin auth session — no separate password needed
 let _payrollStaffData = [];
 
-// Triple-click on period badge to trigger unlock
-function _payrollUnlockClick() {
-  _payrollClickCount++;
-  clearTimeout(_payrollClickTimer);
-  _payrollClickTimer = setTimeout(() => { _payrollClickCount = 0; }, 600);
-  if (_payrollClickCount >= 3) {
-    _payrollClickCount = 0;
-    if (_payrollUnlocked) {
-      // Already unlocked — just switch to tab
-      sw('t-payroll'); loadPayrollTab();
-    } else {
-      _payrollPromptPassword();
-    }
-  }
-}
-
-function _payrollPromptPassword() {
-  // Build inline prompt modal
-  const existing = document.getElementById('payroll-lock-modal');
-  if (existing) { existing.classList.remove('hidden'); return; }
-
-  const modal = document.createElement('div');
-  modal.id = 'payroll-lock-modal';
-  modal.className = 'modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center';
-  modal.innerHTML = `
-    <div style="background:var(--card);border-radius:14px;padding:32px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.25)">
-      <div style="font-size:1.1rem;font-weight:700;color:var(--navy);margin-bottom:6px">🔒 Payroll Access</div>
-      <div style="font-size:.82rem;color:var(--text-2);margin-bottom:20px">Enter payroll password to continue</div>
-      <input type="password" id="payroll-pw-input" placeholder="Password"
-        style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.9rem;font-family:inherit;margin-bottom:12px;box-sizing:border-box"
-        onkeydown="if(event.key==='Enter')_payrollSubmitPassword()">
-      <div id="payroll-pw-err" style="font-size:.78rem;color:var(--red-d);min-height:18px;margin-bottom:10px"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-ghost btn-sm" onclick="_payrollClosePrompt()">Cancel</button>
-        <button class="btn btn-green btn-sm" onclick="_payrollSubmitPassword()">Unlock →</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-  setTimeout(() => (document.getElementById('payroll-pw-input') && document.getElementById('payroll-pw-input').focus()), 100);
-}
-
-async function _payrollSubmitPassword() {
-  const pw = (document.getElementById('payroll-pw-input') ? document.getElementById('payroll-pw-input').value : '') || '';
-  const err = document.getElementById('payroll-pw-err');
-  if (!pw) return;
-
-  try {
-    const r = await fetch('/api/admin/payroll-verify', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({password: pw})
-    });
-    const d = await r.json();
-    if (d.ok) {
-      _payrollUnlocked = true;
-      sessionStorage.setItem('payroll_unlocked', '1');
-      _payrollClosePrompt();
-      // Show tab and navigate
-      const tab = document.getElementById('tab-t-payroll');
-      if (tab) tab.style.display = '';
-      sw('t-payroll');
-      loadPayrollTab();
-    } else {
-      if (err) err.textContent = 'Incorrect password.';
-      const inp = document.getElementById('payroll-pw-input');
-      if (inp) { inp.value = ''; inp.focus(); }
-    }
-  } catch(e) {
-    if (err) err.textContent = 'Error — try again.';
-  }
-}
-
-function _payrollClosePrompt() {
-  const modal = document.getElementById('payroll-lock-modal');
-  if (modal) modal.remove();
-}
-
-// Restore session if already unlocked
-(function() {
-  if (sessionStorage.getItem('payroll_unlocked') === '1') {
-    _payrollUnlocked = true;
-    const tab = document.getElementById('tab-t-payroll');
-    if (tab) tab.style.display = '';
-  }
-})();
+// Legacy unlock click — no-op now (tab visibility handled by auth permissions)
+function _payrollUnlockClick() {}
 
 // ── Sub-tab switcher ─────────────────────────────────────
 function paySubTab(t) {
@@ -117,7 +56,7 @@ async function _payrollLoadMonthFilter() {
   if (!sel || sel.dataset.loaded) return;
   sel.dataset.loaded = '1'; // set immediately to prevent double-load
   try {
-    const months = await fetch('/api/admin/payroll-history-months').then(r=>r.json());
+    const months = await fetch('/api/admin/payroll-history-months', {credentials:'include'}).then(r=>r.json());
     // Sort chronologically: parse mon-yyyy into a sortable date
     const mnames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
     months.sort(function(a, b) {
@@ -146,7 +85,7 @@ var _stationsLoaded = false;
 async function _loadStationSelectors() {
   if (_stationsLoaded) return Promise.resolve();
   try {
-    _allStations = await fetch('/api/admin/stations-by-type').then(function(r){return r.json();});
+    _allStations = await fetch('/api/admin/stations-by-type', {credentials:'include'}).then(function(r){return r.json();});
     // Default selections by type
     var defaultEdsp = _allStations.filter(function(s){return s.station_type==='EDSP';}).map(function(s){return s.station_code;});
     var defaultDsp  = _allStations.filter(function(s){return s.station_type==='DSP';}).map(function(s){return s.station_code;});
@@ -232,6 +171,7 @@ async function loadPayrollStaff(stationType) {
   body.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;padding:20px;color:var(--text-3)">Loading…</td></tr>`;
 
   stationType = stationType || 'EDSP';
+  window._currentPayrollStationType = stationType; // store for export
   await _loadStationSelectors();
   const selectedStations = stationType === 'DSP' ? _dspSelected.slice() : _edspSelected.slice();
   const userType = (document.getElementById('pay-type-filter') ? document.getElementById('pay-type-filter').value : '') || '';
@@ -242,7 +182,7 @@ async function loadPayrollStaff(stationType) {
   if (month)    qp.set('month', month);
 
   try {
-    const allData = await fetch('/api/admin/payroll-staff?' + qp).then(r=>r.json());
+    const allData = await fetch('/api/admin/payroll-staff?' + qp).then(r=>r.json(), {credentials:'include'});
     _payrollStaffData = allData.filter(function(r) { return selectedStations.includes(r.station_code); });
     if (count) count.textContent = _payrollStaffData.length;
     if (!_payrollStaffData.length) {
@@ -257,47 +197,48 @@ async function loadPayrollStaff(stationType) {
       const p = r._has_payroll ? '💰' : '';
       return `<span title="EDSP:${r._has_edsp} Payroll:${r._has_payroll}" style="font-size:.65rem;color:var(--text-3)">${e}${p}</span>`;
     };
+    const att='background:#f0f9ff'; const par='background:#f0fdf4'; const pay='background:#fefce8'; const ded='background:#fef2f2';
     body.innerHTML = _payrollStaffData.map(r => `
       <tr style="font-size:.72rem">
-        <td style="white-space:nowrap">${escH(r.store_name)}</td>
-        <td style="font-family:monospace">${escH(r.station_code)}</td>
-        <td style="font-family:monospace">${r.id}</td>
-        <td style="white-space:nowrap;font-size:.68rem;color:var(--text-3)">${escH(r.head)||'—'}</td>
-        <td style="white-space:nowrap;font-weight:500">${escH(r.full_name)} ${src(r)}</td>
-        <td style="font-size:.68rem;color:var(--text-3)">${escH(r.associate_id)||'—'}</td>
-        <td style="text-align:right">${fmt(r.present_days)}</td>
-        <td style="text-align:right">${fmt(r.week_off)}</td>
-        <td style="text-align:right">${fmt(r.total_days)}</td>
-        <td style="text-align:right">${fmt(r.delivery)}</td>
-        <td style="text-align:right">${fmt(r.pickup)}</td>
-        <td style="text-align:right">${fmt(r.swa)}</td>
-        <td style="text-align:right">${fmt(r.smd)}</td>
-        <td style="text-align:right">${fmt(r.mfn)}</td>
-        <td style="text-align:right">${fmt(r.seller_returns)}</td>
-        <td style="text-align:right;font-weight:500">${fmt(r.total_parcels)}</td>
-        <td style="text-align:right">${fmtR(r.payment)}</td>
-        <td style="text-align:right">${fmtR(r.incentive)}</td>
-        <td style="text-align:right;font-weight:500">${fmtR(r.gross_payment)}</td>
-        <td style="text-align:right;color:var(--red-d)">${r.debit_note ? fmtR(r.debit_note) : '—'}</td>
-        <td style="text-align:right;font-weight:600;color:var(--green-d)">${fmtR(r.net_pay)}</td>
-        <td style="text-align:right;color:var(--text-3)">${r.advance ? fmtR(r.advance) : '—'}</td>
-        <td style="text-align:right">${fmtR(r.tds)}</td>
-        <td style="text-align:right;font-weight:600">${fmtR(r.bank_transfer)}</td>
-        <td style="text-align:right">${fmtR(r.ctc)}</td>
-        <td style="font-size:.68rem">${escH(r.pay_type)||'—'}</td>
-        <td style="text-align:right">${r.petrol ? fmtR(r.petrol) : '—'}</td>
-        <td style="text-align:right">${fmt(r.parcel_count)}</td>
-        <td style="text-align:right">${fmt(r.per_parcel_cost)}</td>
-        <td style="text-align:right">${fmt(r.average)}</td>
-        <td style="text-align:right;color:${r.diff<0?'var(--red-d)':'var(--green-d)'}">${fmt(r.diff)}</td>
-        <td style="font-family:monospace;font-size:.68rem">${escH(r.pan_card)||'—'}</td>
-        <td style="font-size:.68rem">${escH(r.user_type)}</td>
-        <td style="font-size:.68rem;white-space:nowrap">${escH(r.cluster_manager)||'—'}</td>
-        <td style="font-size:.65rem;color:var(--text-3)">${escH(r.pnl_use)||'—'}</td>
-        <td style="font-size:.65rem;color:var(--text-3)">${escH(r.remarks)||'—'}</td>
-        <td style="font-size:.65rem">${escH(r.state)||'—'}</td>
-        <td style="font-size:.65rem">${escH(r.tally_ledger)||'—'}</td>
-        <td style="font-size:.65rem">${escH(r.cost_centre)||'—'}</td>
+        <td style="white-space:nowrap;padding:4px 8px">${escH(r.store_name)}</td>
+        <td style="font-family:monospace;padding:4px 8px">${escH(r.station_code)}</td>
+        <td style="font-family:monospace;padding:4px 8px">${r.id}</td>
+        <td style="white-space:nowrap;font-size:.68rem;color:var(--text-3);padding:4px 8px">${escH(r.head)||'—'}</td>
+        <td style="white-space:nowrap;font-weight:500;padding:4px 8px">${escH(r.full_name)} ${src(r)}</td>
+        <td style="font-size:.68rem;color:var(--text-3);padding:4px 8px">${escH(r.associate_id)||'—'}</td>
+        <td style="text-align:right;padding:4px 8px;${att}">${fmt(r.present_days)}</td>
+        <td style="text-align:right;padding:4px 8px;${att}">${fmt(r.week_off)}</td>
+        <td style="text-align:right;padding:4px 8px;${att}">${fmt(r.total_days)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.delivery)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.pickup)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.swa)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.smd)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.mfn)}</td>
+        <td style="text-align:right;padding:4px 8px;${par}">${fmt(r.seller_returns)}</td>
+        <td style="text-align:right;font-weight:600;padding:4px 8px;${par}">${fmt(r.total_parcels)}</td>
+        <td style="text-align:right;padding:4px 8px;${pay}">${fmtR(r.payment)}</td>
+        <td style="text-align:right;padding:4px 8px;${pay}">${fmtR(r.incentive)}</td>
+        <td style="text-align:right;font-weight:600;padding:4px 8px;${pay}">${fmtR(r.gross_payment)}</td>
+        <td style="text-align:right;color:var(--red-d);padding:4px 8px;${ded}">${r.debit_note ? fmtR(r.debit_note) : '—'}</td>
+        <td style="text-align:right;font-weight:700;color:var(--green-d);padding:4px 8px;${pay}">${fmtR(r.net_pay)}</td>
+        <td style="text-align:right;color:var(--text-3);padding:4px 8px;${ded}">${r.advance ? fmtR(r.advance) : '—'}</td>
+        <td style="text-align:right;padding:4px 8px;${ded}">${fmtR(r.tds)}</td>
+        <td style="text-align:right;font-weight:700;padding:4px 8px;${par}">${fmtR(r.bank_transfer)}</td>
+        <td style="text-align:right;padding:4px 8px">${fmtR(r.ctc)}</td>
+        <td style="font-size:.68rem;padding:4px 8px">${escH(r.pay_type)||'—'}</td>
+        <td style="text-align:right;padding:4px 8px">${r.petrol ? fmtR(r.petrol) : '—'}</td>
+        <td style="text-align:right;padding:4px 8px">${fmt(r.parcel_count)}</td>
+        <td style="text-align:right;padding:4px 8px">${fmt(r.per_parcel_cost)}</td>
+        <td style="text-align:right;padding:4px 8px">${fmt(r.average)}</td>
+        <td style="text-align:right;padding:4px 8px;color:${r.diff<0?'var(--red-d)':'var(--green-d)'}">${fmt(r.diff)}</td>
+        <td style="font-family:monospace;font-size:.68rem;padding:4px 8px">${escH(r.pan_card)||'—'}</td>
+        <td style="font-size:.68rem;padding:4px 8px">${escH(r.user_type)}</td>
+        <td style="font-size:.68rem;white-space:nowrap;padding:4px 8px">${escH(r.cluster_manager)||'—'}</td>
+        <td style="font-size:.65rem;color:var(--text-3);padding:4px 8px">${escH(r.pnl_use)||'—'}</td>
+        <td style="padding:4px 8px;max-width:180px">${truncRemark(r.remarks)}</td>
+        <td style="font-size:.65rem;padding:4px 8px">${escH(r.state)||'—'}</td>
+        <td style="font-size:.65rem;padding:4px 8px">${escH(r.tally_ledger)||'—'}</td>
+        <td style="font-size:.65rem;padding:4px 8px">${escH(r.cost_centre)||'—'}</td>
       </tr>`).join('');
   } catch(e) {
     body.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;color:var(--red-d);padding:20px">Error: ${e.message}</td></tr>`;
@@ -357,7 +298,7 @@ function exportPayrollExcel() {
   ];
 
   const month   = (document.getElementById('pay-month-filter') ? document.getElementById('pay-month-filter').value : '') || 'export';
-  const station = stationType || 'EDSP';
+  const station = window._currentPayrollStationType || 'EDSP';
   XLSX.utils.book_append_sheet(wb, ws, 'Payroll');
   XLSX.writeFile(wb, `Payroll_${month}_${station}.xlsx`);
   toast(`Exported ${_payrollStaffData.length} records ✓`, 'success');
@@ -377,23 +318,27 @@ function _histToggleStrip(key) {
   var isOpen = _histOpenKey === key;
   // Close all
   _HIST_KEYS.forEach(function(k) {
-    var body = document.getElementById('hist-' + k + '-body');
-    var btn  = document.getElementById('hist-' + k + '-toggle');
+    var body  = document.getElementById('hist-' + k + '-body');
+    var chev  = document.getElementById('hist-' + k + '-toggle');
     var strip = document.getElementById('hist-strip-' + k);
     if (body)  body.style.display = 'none';
-    if (btn)   btn.textContent = '▼ Show';
+    if (chev)  chev.textContent = '▼';
     if (strip) strip.classList.remove('open');
   });
   if (isOpen) { _histOpenKey = null; return; }
   // Open this one
   var body  = document.getElementById('hist-' + key + '-body');
-  var btn   = document.getElementById('hist-' + key + '-toggle');
+  var chev  = document.getElementById('hist-' + key + '-toggle');
   var strip = document.getElementById('hist-strip-' + key);
   if (body)  body.style.display = 'block';
-  if (btn)   btn.textContent = '▲ Hide';
+  if (chev)  chev.textContent = '▲';
   if (strip) strip.classList.add('open');
   _histOpenKey = key;
   _histLoadList(key);
+  setTimeout(function() {
+    var target = strip || body;
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 80);
 }
 
 function _histLoadList(key) {
@@ -425,7 +370,105 @@ function _monthBadge(m) {
   return '<span style="font-weight:700;color:'+color+';background:'+bg+';padding:2px 8px;border-radius:6px;font-size:.78rem">'+escH(m)+'</span>';
 }
 
-function _histRenderList(key, listEl, rows, colDefs, statsHtml, highlightVal) {
+
+// ── FINANCIAL YEAR UTILITIES ──────────────────────────────────────────────────
+
+// Parse any month string → {month:0-11, year:YYYY}
+function _parseMonthStr(m) {
+  if (!m) return null;
+  var months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  var s = String(m).toLowerCase().replace(/-[ab12]$/,'');
+
+  // "jan-2026" format
+  var p1 = s.match(/^([a-z]{3})-(\d{4})$/);
+  if (p1) { var mi = months.indexOf(p1[1]); if (mi>=0) return {month:mi, year:parseInt(p1[2])}; }
+
+  // "sep'25" format (kms period labels)
+  var p2 = s.match(/^([a-z]{3})'(\d{2})$/);
+  if (p2) { var mi2 = months.indexOf(p2[1]); if (mi2>=0) return {month:mi2, year:2000+parseInt(p2[2])}; }
+
+  // "YYYY-MM" format
+  var p3 = s.match(/^(\d{4})-(\d{2})$/);
+  if (p3) return {month:parseInt(p3[2])-1, year:parseInt(p3[1])};
+
+  // "YYYY-MM-DD" format
+  var p4 = s.match(/^(\d{4})-(\d{2})-\d{2}$/);
+  if (p4) return {month:parseInt(p4[2])-1, year:parseInt(p4[1])};
+
+  // "DD-MM-YYYY" format
+  var p5 = s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (p5) return {month:parseInt(p5[2])-1, year:parseInt(p5[3])};
+
+  return null;
+}
+
+// Get FY label for a month string e.g. "jan-2026" → "FY25-26"
+function _monthToFY(m) {
+  var p = _parseMonthStr(m);
+  if (!p) return 'Unknown';
+  // FY starts April (month 3). Jan-Mar belong to previous FY.
+  var fyStart = p.month >= 3 ? p.year : p.year - 1;
+  var s = String(fyStart).slice(2);
+  var e = String(fyStart + 1).slice(2);
+  return 'FY' + s + '-' + e;
+}
+
+// Get sorted list of unique FYs from an array of month strings
+function _getFYList(monthStrings) {
+  var fys = {};
+  monthStrings.forEach(function(m) { if(m) fys[_monthToFY(m)] = true; });
+  return Object.keys(fys).sort().reverse(); // Most recent first
+}
+
+// Current active FY per strip
+var _histFY = {};
+
+// Render FY tabs above a strip's content
+function _renderFYTabs(key, allFYs, activeFY, onSwitch) {
+  if (!allFYs.length) return '';
+  var html = '<div style="display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg);flex-wrap:wrap;align-items:center">' +
+    '<span style="font-size:.72rem;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-right:4px">FY</span>';
+  allFYs.forEach(function(fy) {
+    var active = fy === activeFY;
+    html += '<button data-key="' + escH(key) + '" data-fy="' + escH(fy) + '" onclick="_switchFY(this.dataset.key, this.dataset.fy)" ' +
+      'style="padding:3px 12px;font-size:.78rem;font-weight:' + (active?'700':'500') + ';border-radius:6px;cursor:pointer;border:1.5px solid ' +
+      (active?'var(--navy)':'var(--border)') + ';background:' + (active?'var(--navy)':'var(--card)') + ';color:' +
+      (active?'#fff':'var(--text-2)') + '">' + escH(fy) + '</button>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function _switchFY(key, fy) {
+  _histFY[key] = fy;
+  if (_histState[key]) _histState[key].page = 1;
+  _histLoadList(key);
+}
+
+// Filter rows to only those matching the active FY
+// rowDateGetter(row) should return the month string for that row
+function _filterRowsByFY(rows, allData, key, monthGetter) {
+  var allFYs = _getFYList(allData.map(monthGetter));
+  if (!allFYs.length) return { rows: rows, fyHtml: '' };
+
+  // Default to most recent FY
+  if (!_histFY[key]) _histFY[key] = allFYs[0];
+  var activeFY = _histFY[key];
+
+  // Filter
+  var filtered = rows.filter(function(row, i) {
+    var m = monthGetter(allData[i] || {});
+    return _monthToFY(m) === activeFY;
+  });
+
+  return {
+    rows: filtered,
+    fyHtml: _renderFYTabs(key, allFYs, activeFY, _switchFY),
+    allFYs: allFYs
+  };
+}
+
+function _histRenderList(key, listEl, rows, colDefs, statsHtml, highlightVal, fyHtml) {
   if (!listEl) return;
   if (!_histState[key]) _histState[key] = {page:1,sortCol:-1,sortDir:-1};
   var state = _histState[key];
@@ -446,11 +489,13 @@ function _histRenderList(key, listEl, rows, colDefs, statsHtml, highlightVal) {
   var start = (state.page-1)*_PAGE_SIZE;
   var pageRows = sorted.slice(start, start+_PAGE_SIZE);
   var html = '';
+  if (fyHtml) html += fyHtml;
   if (statsHtml) html += '<div class="hist-strip-stats">'+statsHtml+'</div>';
   html += '<div style="overflow:auto;max-height:440px"><table class="hist-list-table"><thead><tr>';
   colDefs.forEach(function(col,i) {
     var cls = state.sortCol===i?(state.sortDir>0?'sort-asc':'sort-desc'):'';
-    html += '<th class="'+cls+'" data-key="'+key+'" data-col="'+i+'" onclick="_histSortList(this.dataset.key,parseInt(this.dataset.col))">'+escH(col.label)+'</th>';
+    var thAlign = col.right ? ' style="text-align:right"' : ' style="text-align:left"';
+    html += '<th class="'+cls+'"'+thAlign+' data-key="'+key+'" data-col="'+i+'" onclick="_histSortList(this.dataset.key,parseInt(this.dataset.col))">'+escH(col.label)+'</th>';
   });
   html += '</tr></thead><tbody>';
   if (!pageRows.length) {
@@ -460,9 +505,9 @@ function _histRenderList(key, listEl, rows, colDefs, statsHtml, highlightVal) {
       var hi = highlightVal && row.some(function(v){return v&&String(v)===highlightVal;});
       html += '<tr'+(hi?' class="highlight"':'')+'>'; 
       row.forEach(function(v,i) {
-        var align = colDefs[i]&&colDefs[i].right?' style="text-align:right"':'';
+        var align = colDefs[i]&&colDefs[i].right?'text-align:right':'text-align:left';
         var isHtmlVal = colDefs[i] && colDefs[i].html;
-        html += '<td'+align+'>'+(v==null?'—':(isHtmlVal?String(v):escH(String(v))))+'</td>';
+        html += '<td style="'+align+'">'+(v==null?'—':(isHtmlVal?String(v):escH(String(v))))+'</td>';
       });
       html += '</tr>';
     });
@@ -713,51 +758,96 @@ function _phParseXlsx(file) {
           }
         }
 
+        // Header-based column mapping — resilient to column reordering
+        const col = makeColMap(raw[0]||[], {
+          store_name:      ['Store Name','Store','Station Name'],
+          station_code:    ['Station Code','Station'],
+          ic_emp:          ['IC / Emp','IC/Emp','Head','Payroll Head'],
+          id:              ['ID','E.ID','Emp ID','Employee ID'],
+          name:            ['Name','Employee Name','Staff Name'],
+          associate_id:    ['Associate ID','Amazon ID','Amz ID'],
+          present_days:    ['Present day','Present Days','Present'],
+          week_off:        ['Week off','Week Off','WO'],
+          total_days:      ['Total','Total Days'],
+          delivery:        ['Delivery','Delivery - Bifme','Delivery - EDSP'],
+          pickup:          ['Pick-up','Pick up','Pick-up - Bifme','Pick-up - EDSP','Pickup'],
+          swa:             ['SWA','V.Bifme'],
+          smd:             ['SMD'],
+          mfn:             ['MFN','MFN - Bifme','MFN - EDSP'],
+          seller_returns:  ['Seller Returns','Seller Returns - EDSP'],
+          total_parcels:   ['Total Parcel - Bifme','Total Parcel - EDSP','Total Parcels','Total Parcel','Approved Parcel By CM'],
+          payment:         ['Payment','Total Pay RS - Petrol'],
+          incentive:       ['Incentive'],
+          gross_payment:   ['Gross Payment','Gross Pay'],
+          debit_note:      ['Debit Note','Debit'],
+          net_pay:         ['Net Pay','Net Pay RS'],
+          advance:         ['Advanced','Advance'],
+          tds:             ['TDS'],
+          bank_transfer:   ['Bank transfer RS','Bank Transfer','Bank Transfer RS','Total Pay - Bank transfer','Total Bank Transfer'],
+          ctc:             ['CTC'],
+          pay_type:        ['Type','Pay Type','Payment Type'],
+          petrol:          ['Petrol'],
+          parcel_count:    ['Parcel','Approved Parcel'],
+          per_parcel_cost: ['Per Parcel Cost','Per parcel cost'],
+          average:         ['Average'],
+          diff:            ['Diff.','Diff'],
+          pan_card:        ['Pan Card','PAN Card','PAN'],
+          user_type:       ['User type','User Type','Designation'],
+          cluster_manager: ['CM','Cluster Manager'],
+          pnl_use:         ['For PNL USE','PNL Use','PNL'],
+          remarks:         ['Remarks','Remark'],
+          state:           ['State'],
+          tally_ledger:    ['Tally Ledger Name','Tally Ledger'],
+          cost_centre:     ['Cost Centre','Cost Center'],
+        });
+
         for (let i = 1; i < raw.length; i++) {
           const r = raw[i];
-          if (!r || !r[2]) continue; // skip rows with no ID
-          const staff_id = parseInt(r[2]);
-          if (!staff_id) continue;
+          const idVal = col('id') !== null ? r[col('id')] : null;
+          if (!idVal) continue;
+          const staff_id = parseInt(idVal);
+          if (!staff_id || isNaN(staff_id)) continue;
+          const stRaw = col('station_code') !== null ? san(r[col('station_code')]) : null;
           rows.push({
             staff_id,
-            store_name:      san(r[0]),
-            station_code:    (san(r[1]) ? san(r[1]).toUpperCase() : null),
-            head:            san(r[3]),
-            name:            san(r[4]),
-            associate_id:    san(r[5]),
-            present_days:    num(r[6]),
-            week_off:        num(r[7]),
-            total_days:      num(r[8]),
-            delivery:        num(r[9]),
-            pickup:          num(r[10]),
-            swa:             num(r[11]),
-            smd:             num(r[12]),
-            mfn:             num(r[13]),
-            seller_returns:  num(r[14]),
-            total_parcels:   num(r[15]),
-            payment:         num(r[16]),
-            incentive:       num(r[17]),
-            gross_payment:   num(r[18]),
-            debit_note:      num(r[19]),
-            net_pay:         num(r[20]),
-            advance:         num(r[21]),
-            tds:             num(r[22]),
-            bank_transfer:   num(r[23]),
-            ctc:             num(r[24]),
-            pay_type:        san(r[25]),
-            petrol:          num(r[26]),
-            parcel_count:    num(r[27]),
-            per_parcel_cost: num(r[28]),
-            average:         num(r[29]),
-            diff:            num(r[30]),
-            pan_card:        san(r[31]),
-            user_type:       san(r[32]),
-            cluster_manager: san(r[33]),
-            pnl_use:         san(r[34]),
-            remarks:         san(r[35]),
-            state:           san(r[36]),
-            tally_ledger:    san(r[37]),
-            cost_centre:     san(r[38])
+            store_name:      col('store_name')     !== null ? san(r[col('store_name')])     : null,
+            station_code:    stRaw ? stRaw.toUpperCase() : null,
+            head:            col('ic_emp')         !== null ? san(r[col('ic_emp')])         : null,
+            name:            col('name')           !== null ? san(r[col('name')])           : null,
+            associate_id:    col('associate_id')   !== null ? san(r[col('associate_id')])   : null,
+            present_days:    col('present_days')   !== null ? num(r[col('present_days')])   : 0,
+            week_off:        col('week_off')       !== null ? num(r[col('week_off')])       : 0,
+            total_days:      col('total_days')     !== null ? num(r[col('total_days')])     : 0,
+            delivery:        col('delivery')       !== null ? num(r[col('delivery')])       : 0,
+            pickup:          col('pickup')         !== null ? num(r[col('pickup')])         : 0,
+            swa:             col('swa')            !== null ? num(r[col('swa')])            : 0,
+            smd:             col('smd')            !== null ? num(r[col('smd')])            : 0,
+            mfn:             col('mfn')            !== null ? num(r[col('mfn')])            : 0,
+            seller_returns:  col('seller_returns') !== null ? num(r[col('seller_returns')]) : 0,
+            total_parcels:   col('total_parcels')  !== null ? num(r[col('total_parcels')])  : 0,
+            payment:         col('payment')        !== null ? num(r[col('payment')])        : 0,
+            incentive:       col('incentive')      !== null ? num(r[col('incentive')])      : 0,
+            gross_payment:   col('gross_payment')  !== null ? num(r[col('gross_payment')])  : 0,
+            debit_note:      col('debit_note')     !== null ? num(r[col('debit_note')])     : 0,
+            net_pay:         col('net_pay')        !== null ? num(r[col('net_pay')])        : 0,
+            advance:         col('advance')        !== null ? num(r[col('advance')])        : 0,
+            tds:             col('tds')            !== null ? num(r[col('tds')])            : 0,
+            bank_transfer:   col('bank_transfer')  !== null ? num(r[col('bank_transfer')])  : 0,
+            ctc:             col('ctc')            !== null ? num(r[col('ctc')])            : 0,
+            pay_type:        col('pay_type')       !== null ? san(r[col('pay_type')])       : null,
+            petrol:          col('petrol')         !== null ? num(r[col('petrol')])         : 0,
+            parcel_count:    col('parcel_count')   !== null ? num(r[col('parcel_count')])   : 0,
+            per_parcel_cost: col('per_parcel_cost')!== null ? num(r[col('per_parcel_cost')]): 0,
+            average:         col('average')        !== null ? num(r[col('average')])        : 0,
+            diff:            col('diff')           !== null ? num(r[col('diff')])           : 0,
+            pan_card:        col('pan_card')       !== null ? san(r[col('pan_card')])       : null,
+            user_type:       col('user_type')      !== null ? san(r[col('user_type')])      : null,
+            cluster_manager: col('cluster_manager')!== null ? san(r[col('cluster_manager')]): null,
+            pnl_use:         col('pnl_use')        !== null ? san(r[col('pnl_use')])        : null,
+            remarks:         col('remarks')        !== null ? san(r[col('remarks')])        : null,
+            state:           col('state')          !== null ? san(r[col('state')])          : null,
+            tally_ledger:    col('tally_ledger')   !== null ? san(r[col('tally_ledger')])   : null,
+            cost_centre:     col('cost_centre')    !== null ? san(r[col('cost_centre')])    : null,
           });
         }
         resolve({rows, detectedMonth});
@@ -778,7 +868,7 @@ async function _phRunPreview(file) {
     // Check if month exists
     let existsWarning = '';
     if (detectedMonth) {
-      const chk = await fetch('/api/admin/payroll-history-check?month=' + encodeURIComponent(detectedMonth)).then(r=>r.json());
+      const chk = await fetch('/api/admin/payroll-history-check?month=' + encodeURIComponent(detectedMonth)).then(r=>r.json(), {credentials:'include'});
       if (chk.exists) {
         existsWarning = `<div style="margin-top:8px;padding:8px 12px;background:#fef9c3;border-radius:8px;color:#92400e;font-size:.75rem">
           ⚠ <strong>${escH(detectedMonth)}</strong> already has ${chk.count} rows. Confirming will replace all existing data for this month.</div>`;
@@ -862,7 +952,7 @@ async function _phLoadMonths() {
   const el = document.getElementById('ph-months-list') || document.getElementById('hist-payroll-list');
   if (!el) return;
   try {
-    const r = await fetch('/api/admin/payroll-history-months');
+    const r = await fetch('/api/admin/payroll-history-months', {credentials:'include'});
     const d = await r.json();
     const totalNet = d.reduce(function(s,p){return s+parseFloat(p.total_net_pay||0);},0);
     const totalBank = d.reduce(function(s,p){return s+parseFloat(p.total_bank_transfer||0);},0);
@@ -871,24 +961,44 @@ async function _phLoadMonths() {
       '<span>Bank Transfer total: <strong>'+_fmtAmt(totalBank)+'</strong></span>';
     const cols = [
       {label:'Month'},{label:'Staff',right:true},{label:'Net Pay',right:true},
-      {label:'Bank Transfer',right:true},{label:'TDS',right:true},{label:'',html:true}
+      {label:'Bank Transfer',right:true},{label:'TDS',right:true},{label:'Actions',html:true}
     ];
     const rows = d.map(function(p) {
       return [
         p.payroll_month, p.staff_count,
         _fmtAmt(p.total_net_pay), _fmtAmt(p.total_bank_transfer), _fmtAmt(p.total_tds),
-        '<button class="btn btn-ghost btn-sm" style="font-size:.7rem" data-m="'+escH(p.payroll_month)+'" data-type="payroll" onclick="_histReview(this.dataset.type,this.dataset.m)">👁 Review</button>'
+        '<span style="white-space:nowrap">' +
+        '<button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px" data-m="'+escH(p.payroll_month)+'" data-type="payroll" onclick="_histReview(this.dataset.type,this.dataset.m)">👁 Review</button>' +
+        '<button class="btn btn-ghost btn-sm" style="font-size:.7rem;color:var(--red-d)" data-m="'+escH(p.payroll_month)+'" onclick="_phDelete(this.dataset.m)">🗑</button>' +
+        '</span>'
       ];
     });
-    _histRenderList('payroll', el, rows, cols, stats);
-    // Replace month cells with badges after render
+    var fyResult = _filterRowsByFY(rows, d, 'payroll', function(item){ return item.payroll_month; });
+    _histRenderList('payroll', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     var tbody = el.querySelector('tbody');
+    var fyD = d.filter(function(item){ return _monthToFY(item.payroll_month) === (_histFY['payroll'] || (fyResult.allFYs||[])[0]); });
     if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i) {
-      if (d[i]) tr.cells[0].innerHTML = _monthBadge(d[i].payroll_month);
+      if (fyD[i]) tr.cells[0].innerHTML = _monthBadge(fyD[i].payroll_month);
     });
   } catch(e) {
     el.innerHTML = '<span style="color:var(--red-d)">Error: '+e.message+'</span>';
   }
+}
+
+async function _phDelete(month) {
+  _showConfirmModal(
+    '🗑 Delete Payroll Month',
+    'Delete all payroll data for <strong>' + month + '</strong>? This cannot be undone.',
+    'Delete', 'var(--red-d)',
+    async function() {
+      try {
+        var r = await fetch('/api/admin/payroll-history/' + encodeURIComponent(month), {method:'DELETE'});
+        var d = await r.json();
+        if (d.ok) { _showResultModal('✅ Deleted', month + ' payroll deleted (' + d.deleted + ' rows).', 'success'); _phLoadMonths(); }
+        else _showResultModal('❌ Error', d.error||'Delete failed', 'error');
+      } catch(e) { _showResultModal('❌ Error', e.message, 'error'); }
+    }
+  );
 }
 
 // ── Historical EDSP / KMS Upload ─────────────────────────────────────────────
@@ -900,19 +1010,19 @@ async function _edspLoadSummary() {
   const el = document.getElementById('edsp-summary-list');
   if (!el) return;
   try {
-    const r = await fetch('/api/admin/edsp-all-periods');
+    const r = await fetch('/api/admin/edsp-all-periods', {credentials:'include'});
     const d = await r.json();
     if (!d.length) { el.innerHTML = '<div style="color:var(--text-3)">No data in system yet.</div>'; return; }
     el.innerHTML = '<table style="width:100%;border-collapse:collapse">' +
-      '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text-2);text-align:left">' +
-      '<th style="padding:5px 8px">Period</th>' +
-      '<th style="padding:5px 8px">Source</th>' +
-      '<th style="padding:5px 8px">Date Range</th>' +
+      '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text-2)">' +
+      '<th style="padding:5px 8px;text-align:left">Period</th>' +
+      '<th style="padding:5px 8px;text-align:left">Source</th>' +
+      '<th style="padding:5px 8px;text-align:left">Date Range</th>' +
       '<th style="padding:5px 8px;text-align:right">Rows</th>' +
       '<th style="padding:5px 8px;text-align:right">Stations</th>' +
       '<th style="padding:5px 8px;text-align:right">ICs</th>' +
       '<th style="padding:5px 8px;text-align:right">Deliveries</th>' +
-      '<th style="padding:5px 8px"></th></tr></thead><tbody>' +
+      '<th style="padding:5px 8px;text-align:right">Actions</th></tr></thead><tbody>' +
       d.map(function(p) {
         var isHist = p.source === 'historical';
         var source = isHist
@@ -1222,7 +1332,7 @@ async function _dspPhLoadMonths() {
   var el = document.getElementById('dsp-ph-months') || document.getElementById('hist-dsp-payroll-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/dsp-payroll-months');
+    var r = await fetch('/api/admin/dsp-payroll-months', {credentials:'include'});
     var d = await r.json();
     var totalNet = d.reduce(function(s,p){return s+(parseFloat(p.total_net_pay)||0);},0);
     var stats = '<span><strong>'+d.length+'</strong> entries</span><span>Net Pay total: <strong>'+_fmtAmt(totalNet)+'</strong></span>';
@@ -1232,7 +1342,8 @@ async function _dspPhLoadMonths() {
         _fmtAmt(p.total_net_pay), _fmtAmt(p.total_bank_transfer),
         '<span style="white-space:nowrap"><button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px" data-month="'+escH(p.payment_month)+'" data-station="'+escH(p.station_code)+'" data-cycle="'+(p.cycle||1)+'" onclick="_editDspPeriod(this.dataset.month,this.dataset.station,this.dataset.cycle)" title="Edit period">📅</button><button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px" data-month="'+escH(p.payment_month)+'" data-station="'+escH(p.station_code)+'" data-cycle="'+(p.cycle||1)+'" onclick="_histReviewDsp(this.dataset.month,this.dataset.station,this.dataset.cycle)">👁 Review</button><button class="btn btn-ghost btn-sm" style="color:var(--red-d);font-size:.7rem" data-month="'+escH(p.payment_month)+'" data-station="'+escH(p.station_code)+'" data-cycle="'+(p.cycle||1)+'" onclick="_dspPhDelete(this.dataset.month,this.dataset.station,this.dataset.cycle)">🗑</button></span>'];
     });
-    _histRenderList('dsp-payroll', el, rows, cols, stats);
+    var fyResult = _filterRowsByFY(rows, d, 'dsp-payroll', function(item){ return item.payment_month; });
+    _histRenderList('dsp-payroll', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     var tbody = el.querySelector('tbody');
     if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){if(d[i])tr.cells[0].innerHTML=_monthBadge(d[i].payment_month);});
   } catch(e) { el.innerHTML = '<span style="color:var(--red-d)">Error: '+e.message+'</span>'; }
@@ -1320,6 +1431,40 @@ function _dspParseXlsx(file) {
         var isAMDESimple = headers.includes('Payment') && !headers.includes('A-Block') && !headers.includes('A BLOCK') && !isBDQE;
         var isGNNT   = headers.includes('A BLOCK') || headers.includes('Present ');
 
+        // Build DSP header-based column map once (handles all BDQE/AMDE/GNNT variants)
+        var dc = makeColMap(raw[0]||[], {
+          station_code:     ['Station Code','Station','Store'],
+          staff_id:         ['ID','Emp ID','Employee ID','Staff ID'],
+          name:             ['Name','Employee Name','Staff Name'],
+          vehicle_type:     ['Type','Vehicle Type','Vehicle','Pay Type'],
+          present_days:     ['Present','Present Days','Present day','Present '],
+          block_a:          ['A-Block','A Block','A BLOCK','Block A'],
+          block_b:          ['B-Block','B Block','B BLOCK','Block B'],
+          block_c:          ['C-Block','C Block','C BLOCK','Block C'],
+          block_d:          ['D-Block','D Block','D BLOCK','Block D'],
+          block_z:          ['Z-Block','Z Block','Z BLOCK','Block Z'],
+          delivery:         ['Delivery','Delivery Parcel'],
+          c_return:         ['C Return','C-Return','Return'],
+          buy_back:         ['Buy Back','Buyback'],
+          total_parcels:    ['Total Parcel','Total Parcels'],
+          per_parcel_rate:  ['Per Parcel Rate','Per Parcel','Rate'],
+          total_parcel_amt: ['Total Parcel Amt','Total Parcel Amount'],
+          payment:          ['Payment','A-Payment','A Payment'],
+          incentive:        ['Incentive'],
+          gross_payment:    ['Gross Payment','Gross Pay','Gross'],
+          debit_note:       ['Debit Note','Debit'],
+          net_pay:          ['Net Pay','Net Payment'],
+          advance:          ['Advance','Advanced'],
+          tds:              ['TDS'],
+          bank_transfer:    ['Bank Transfer','Bank transfer RS','Bank Transfer RS'],
+          remarks:          ['Remarks','Remark'],
+          pan_card:         ['PAN Card','Pan Card','PAN'],
+          ifsc_code:        ['IFSC Code','IFSC'],
+          account_number:   ['Account Number','Account No','Acc No'],
+          tally_ledger:     ['Tally Ledger Name','Tally Ledger'],
+          cost_centre:      ['Cost Centre','Cost Center'],
+        });
+
         for (var i = 1; i < raw.length; i++) {
           var r = raw[i];
           if (!r || (r[o] == null && r[o+1] == null)) continue;
@@ -1331,66 +1476,44 @@ function _dspParseXlsx(file) {
             else if (cv.includes('1st') || cv.includes('first') || cv === '1') dataCycle = 1;
           }
 
+          // Header-based mapping for all DSP formats — resilient to column shifts
+          // Build once before loop (dc = dsp col map)
           var row = {};
-
-          if (isBDQE) {
-            row = {
-              station_code: station_code || 'BDQE',
-              staff_id: parseInt(r[0])||null, name: san(r[1]), vehicle_type: san(r[2]),
-              block_a: num(r[3]), block_b: num(r[4]), block_c: num(r[5]), block_d: num(r[6]),
-              delivery: num(r[7]), c_return: num(r[8]), buy_back: num(r[9]),
-              total_parcels: num(r[10]), per_parcel_rate: num(r[11]), total_parcel_amt: num(r[12]),
-              payment: num(r[19]), incentive: num(r[20]), gross_payment: num(r[21]),
-              debit_note: num(r[22]), net_pay: num(r[23]), advance: num(r[24]),
-              tds: num(r[25]), bank_transfer: num(r[26]),
-              remarks: san(r[27]), pan_card: san(r[28]),
-              ifsc_code: san(r[29]), account_number: san(r[30]),
-              tally_ledger: san(r[31]), cost_centre: san(r[32])
-            };
-          } else if (isAMDESimple) {
-            // Simplified AMDE: Station,ID,Name,Payment,Incentive,Gross,Debit,Net,Advance,TDS,Bank,PAN,IFSC,Account,Remarks,Tally,Cost
-            row = {
-              station_code: san(r[o+0]) || station_code,
-              staff_id: parseInt(r[o+1])||null, name: san(r[o+2]),
-              payment: num(r[o+3]), incentive: num(r[o+4]), gross_payment: num(r[o+5]),
-              debit_note: num(r[o+6]), net_pay: num(r[o+7]), advance: num(r[o+8]),
-              tds: num(r[o+9]), bank_transfer: num(r[o+10]),
-              pan_card: san(r[o+11]), ifsc_code: san(r[o+12]), account_number: san(r[o+13]),
-              remarks: san(r[o+14]), tally_ledger: san(r[o+15]), cost_centre: san(r[o+16])
-            };
-          } else if (isAMDE) {
-            // Full AMDE: Station,ID,Name,Present,A-Block,B-Block,C-Block,D-Block,Z-Block,
-            //            A-Pay,B-Pay,C-Pay,D-Pay,Z-Pay,Payment,Incentive,Gross,Debit,Net,Advance,TDS,Bank,CTC,Type,PAN,IFSC,Account,Designation,Remarks,Tally,Cost
-            row = {
-              station_code: san(r[o+0]) || station_code,
-              staff_id: parseInt(r[o+1])||null, name: san(r[o+2]),
-              present_days: num(r[o+3]),
-              block_a: num(r[o+4]), block_b: num(r[o+5]), block_c: num(r[o+6]),
-              block_d: num(r[o+7]), block_z: num(r[o+8]),
-              payment: num(r[o+14]), incentive: num(r[o+15]), gross_payment: num(r[o+16]),
-              debit_note: num(r[o+17]), net_pay: num(r[o+18]), advance: num(r[o+19]),
-              tds: num(r[o+20]), bank_transfer: num(r[o+21]),
-              vehicle_type: san(r[o+23]),
-              pan_card: san(r[o+24]), ifsc_code: san(r[o+25]), account_number: san(r[o+26]),
-              remarks: san(r[o+28]), tally_ledger: san(r[o+29]), cost_centre: san(r[o+30])
-            };
-          } else {
-            // GNNT: Station,ID,Name,Present,A BLOCK,B BLOCK,C BLOCK,D BLOCK,Z BLOCK,
-            //       A Pay,B Pay,C Pay,D Pay,Z Pay,Payment,Incentive,Gross,Debit,Net,Advance,TDS,Bank,CTC,Remarks,Designation,IFSC,Account,Tally,Cost
-            row = {
-              station_code: san(r[o+0]) || station_code,
-              staff_id: parseInt(r[o+1])||null, name: san(r[o+2]),
-              present_days: num(r[o+3]),
-              block_a: num(r[o+4]), block_b: num(r[o+5]), block_c: num(r[o+6]),
-              block_d: num(r[o+7]), block_z: num(r[o+8]),
-              payment: num(r[o+14]), incentive: num(r[o+15]), gross_payment: num(r[o+16]),
-              debit_note: num(r[o+17]), net_pay: num(r[o+18]), advance: num(r[o+19]),
-              tds: num(r[o+20]), bank_transfer: num(r[o+21]),
-              vehicle_type: san(r[o+24]),
-              ifsc_code: san(r[o+25]), account_number: san(r[o+26]),
-              tally_ledger: san(r[o+27]), cost_centre: san(r[o+28])
-            };
-          }
+          var sid = dc('staff_id') !== null ? parseInt(r[dc('staff_id')]) : null;
+          // Fallback: BDQE has no station col, uses filename
+          var rowStation = dc('station_code') !== null ? (san(r[dc('station_code')])||station_code) : station_code;
+          row = {
+            station_code:     rowStation || station_code || 'UNKNOWN',
+            staff_id:         sid || null,
+            name:             dc('name')           !== null ? san(r[dc('name')])           : null,
+            vehicle_type:     dc('vehicle_type')   !== null ? san(r[dc('vehicle_type')])   : null,
+            present_days:     dc('present_days')   !== null ? num(r[dc('present_days')])   : null,
+            block_a:          dc('block_a')        !== null ? num(r[dc('block_a')])        : 0,
+            block_b:          dc('block_b')        !== null ? num(r[dc('block_b')])        : 0,
+            block_c:          dc('block_c')        !== null ? num(r[dc('block_c')])        : 0,
+            block_d:          dc('block_d')        !== null ? num(r[dc('block_d')])        : 0,
+            block_z:          dc('block_z')        !== null ? num(r[dc('block_z')])        : 0,
+            delivery:         dc('delivery')       !== null ? num(r[dc('delivery')])       : 0,
+            c_return:         dc('c_return')       !== null ? num(r[dc('c_return')])       : 0,
+            buy_back:         dc('buy_back')       !== null ? num(r[dc('buy_back')])       : 0,
+            total_parcels:    dc('total_parcels')  !== null ? num(r[dc('total_parcels')])  : 0,
+            per_parcel_rate:  dc('per_parcel_rate')!== null ? num(r[dc('per_parcel_rate')]): 0,
+            total_parcel_amt: dc('total_parcel_amt')!==null ? num(r[dc('total_parcel_amt')]): 0,
+            payment:          dc('payment')        !== null ? num(r[dc('payment')])        : 0,
+            incentive:        dc('incentive')      !== null ? num(r[dc('incentive')])      : 0,
+            gross_payment:    dc('gross_payment')  !== null ? num(r[dc('gross_payment')])  : 0,
+            debit_note:       dc('debit_note')     !== null ? num(r[dc('debit_note')])     : 0,
+            net_pay:          dc('net_pay')        !== null ? num(r[dc('net_pay')])        : 0,
+            advance:          dc('advance')        !== null ? num(r[dc('advance')])        : 0,
+            tds:              dc('tds')            !== null ? num(r[dc('tds')])            : 0,
+            bank_transfer:    dc('bank_transfer')  !== null ? num(r[dc('bank_transfer')])  : 0,
+            remarks:          dc('remarks')        !== null ? san(r[dc('remarks')])        : null,
+            pan_card:         dc('pan_card')       !== null ? san(r[dc('pan_card')])       : null,
+            ifsc_code:        dc('ifsc_code')      !== null ? san(r[dc('ifsc_code')])      : null,
+            account_number:   dc('account_number') !== null ? san(r[dc('account_number')]) : null,
+            tally_ledger:     dc('tally_ledger')   !== null ? san(r[dc('tally_ledger')])   : null,
+            cost_centre:      dc('cost_centre')    !== null ? san(r[dc('cost_centre')])    : null,
+          };
 
           if (row.staff_id || row.name) rows.push(row);
         }
@@ -1458,20 +1581,55 @@ function _rentParseXlsx(file) {
         var san = function(v) { return v == null ? null : String(v).split('\r').join('').split('\n').join('').trim() || null; };
         var num = function(v) { return v == null ? null : parseFloat(v) || 0; };
         var rows = [];
+        var rc = makeColMap(raw[0]||[], {
+          station_code:    ['Station Code','Station'],
+          station_name:    ['Station Name','Store Name','Store'],
+          inv_number:      ['Invoice Number','Inv No','Inv Number','Invoice No'],
+          rent_amount:     ['Rent Amount','Rent','Rent RS'],
+          gst:             ['GST','GST Amount'],
+          total_rent:      ['Total Rent','Total','Total Amount'],
+          tds:             ['TDS'],
+          payable_amount:  ['Payable Amount','Payable','Net Payable'],
+          shop_owner_name: ['Shop Owner Name','Owner Name','Landlord Name','Owner'],
+          account_number:  ['Account Number','Account No','Acc No'],
+          ifsc_code:       ['IFSC Code','IFSC'],
+          pan_card_number: ['Pan Card Number','PAN','PAN Number'],
+          pan_card_name:   ['Pan Card Name','PAN Name','Name on PAN'],
+          bank_remarks:    ['Bank Remarks','Bank Narration'],
+          remarks:         ['Remarks','Remark'],
+          remarks2:        ['Remarks2','Remarks 2'],
+          property_type:   ['Property Type','Type'],
+          tally_ledger:    ['Tally Ledger Name','Tally Ledger'],
+          cost_centre:     ['Cost Centre','Cost Center'],
+          cm:              ['CM','Cluster Manager'],
+        });
         for (var i = 1; i < raw.length; i++) {
           var r = raw[i];
-          if (!r || !r[0]) continue;
+          var scIdx = rc('station_code'); if (scIdx === null) scIdx = 0;
+          if (!r || !r[scIdx]) continue;
+          var scVal = san(r[scIdx]);
+          if (!scVal) continue;
           rows.push({
-            station_code: san(r[0]) ? san(r[0]).toUpperCase() : null,
-            station_name: san(r[1]), inv_number: san(r[2]),
-            rent_amount: num(r[3]), gst: num(r[4]), total_rent: num(r[5]),
-            tds: num(r[6]), payable_amount: num(r[7]),
-            shop_owner_name: san(r[8]), account_number: san(r[9]),
-            ifsc_code: san(r[10]), pan_card_number: san(r[11]),
-            pan_card_name: san(r[12]), bank_remarks: san(r[13]),
-            remarks: san(r[14]), remarks2: san(r[15]),
-            property_type: san(r[16]), tally_ledger: san(r[17]),
-            cost_centre: san(r[18]), cm: san(r[19])
+            station_code:    scVal.toUpperCase(),
+            station_name:    rc('station_name')    !== null ? san(r[rc('station_name')])    : null,
+            inv_number:      rc('inv_number')      !== null ? san(r[rc('inv_number')])      : null,
+            rent_amount:     rc('rent_amount')     !== null ? num(r[rc('rent_amount')])     : 0,
+            gst:             rc('gst')             !== null ? num(r[rc('gst')])             : 0,
+            total_rent:      rc('total_rent')      !== null ? num(r[rc('total_rent')])      : 0,
+            tds:             rc('tds')             !== null ? num(r[rc('tds')])             : 0,
+            payable_amount:  rc('payable_amount')  !== null ? num(r[rc('payable_amount')])  : 0,
+            shop_owner_name: rc('shop_owner_name') !== null ? san(r[rc('shop_owner_name')]) : null,
+            account_number:  rc('account_number')  !== null ? san(r[rc('account_number')])  : null,
+            ifsc_code:       rc('ifsc_code')       !== null ? san(r[rc('ifsc_code')])       : null,
+            pan_card_number: rc('pan_card_number') !== null ? san(r[rc('pan_card_number')]) : null,
+            pan_card_name:   rc('pan_card_name')   !== null ? san(r[rc('pan_card_name')])   : null,
+            bank_remarks:    rc('bank_remarks')    !== null ? san(r[rc('bank_remarks')])    : null,
+            remarks:         rc('remarks')         !== null ? san(r[rc('remarks')])         : null,
+            remarks2:        rc('remarks2')        !== null ? san(r[rc('remarks2')])        : null,
+            property_type:   rc('property_type')   !== null ? san(r[rc('property_type')])   : null,
+            tally_ledger:    rc('tally_ledger')    !== null ? san(r[rc('tally_ledger')])    : null,
+            cost_centre:     rc('cost_centre')     !== null ? san(r[rc('cost_centre')])     : null,
+            cm:              rc('cm')              !== null ? san(r[rc('cm')])              : null,
           });
         }
         // Detect month from filename
@@ -1535,32 +1693,75 @@ function _addlParseXlsx(file) {
         var num = function(v) { return v == null ? null : parseFloat(v) || 0; };
         var rows = [];
         var monthCount = {};
+        var ac = makeColMap(raw[0]||[], {
+          sr_no:          ['Sr No','Sr.No','S.No','Serial No','#'],
+          payment_date:   ['Payment Date','Date','Pay Date'],
+          station_code:   ['Station Code','Station'],
+          payment_head:   ['Payment Head','Pay Head','Head','Category'],
+          company_name:   ['Company Name','Company','Firm Name'],
+          employee_id:    ['Employee ID','Emp ID','IC ID','ID'],
+          name:           ['Name','Employee Name'],
+          billing_month:  ['Billing Month','Month','Bill Month'],
+          inv_number:     ['Invoice Number','Invoice No','Inv No','Inv Number'],
+          inv_taxable_amt:['Inv Taxable Amt','Taxable Amount','Taxable Amt'],
+          gst:            ['GST','GST Amount'],
+          total_inv_amt:  ['Total Inv Amt','Total Invoice Amount','Total Amount','Total'],
+          tds_rate:       ['TDS Rate','TDS %'],
+          tds:            ['TDS','TDS Amount'],
+          actual_amt:     ['Actual Amt','Actual Amount','Net Amount'],
+          advance_debit:  ['Advance Debit','Advance','Advance/Debit'],
+          bank_transfer:  ['Bank Transfer','Bank transfer RS','Bank Transfer RS'],
+          pan_card:       ['Pan Card','PAN','PAN Number'],
+          ifsc_code:      ['IFSC Code','IFSC'],
+          account_number: ['Account Number','Account No','Acc No'],
+          account_name:   ['Account Name','Name on Account','Account Holder'],
+          remarks:        ['Remarks','Remark'],
+          naisad_remarks: ['Naisad Remarks','NAISAD Remarks','Special Remarks'],
+          tally_ledger:   ['Tally Ledger Name','Tally Ledger'],
+          cost_centre:    ['Cost Centre','Cost Center'],
+        });
         for (var i = 1; i < raw.length; i++) {
           var r = raw[i];
-          if (!r || !r[0]) continue;
-          // Billing month for period detection
-          var bm = r[7];
+          var srIdx = ac('sr_no'); if (srIdx === null) srIdx = 0;
+          if (!r || r[srIdx] == null) continue;
+          // Billing month
+          var bmIdx = ac('billing_month');
+          var bm = bmIdx !== null ? r[bmIdx] : r[7];
           if (bm instanceof Date) bm = bm.toISOString().substring(0,7);
           else bm = san(bm);
           if (bm) monthCount[bm] = (monthCount[bm]||0) + 1;
           // Payment date
-          var pd = r[1];
+          var pdIdx = ac('payment_date');
+          var pd = pdIdx !== null ? r[pdIdx] : r[1];
           if (pd instanceof Date) pd = pd.toISOString().substring(0,10);
           else pd = san(pd);
+          var scIdx2 = ac('station_code'); var scVal2 = scIdx2 !== null ? san(r[scIdx2]) : null;
           rows.push({
-            sr_no: parseInt(r[0])||null, payment_date: pd,
-            station_code: san(r[2]) ? san(r[2]).toUpperCase() : null,
-            payment_head: san(r[3]), company_name: san(r[4]),
-            employee_id: san(r[5]), name: san(r[6]),
-            billing_month: san(r[7]), inv_number: san(r[8]),
-            inv_taxable_amt: num(r[9]), gst: num(r[10]),
-            total_inv_amt: num(r[11]), tds_rate: num(r[12]),
-            tds: num(r[13]), actual_amt: num(r[14]),
-            advance_debit: num(r[15]), bank_transfer: num(r[16]),
-            pan_card: san(r[17]), ifsc_code: san(r[18]),
-            account_number: san(r[19]), account_name: san(r[20]),
-            remarks: san(r[21]), naisad_remarks: san(r[22]),
-            tally_ledger: san(r[23]), cost_centre: san(r[24])
+            sr_no:           srIdx !== null        ? parseInt(r[srIdx])||null : null,
+            payment_date:    pd,
+            station_code:    scVal2 ? scVal2.toUpperCase() : null,
+            payment_head:    ac('payment_head')    !== null ? san(r[ac('payment_head')])    : null,
+            company_name:    ac('company_name')    !== null ? san(r[ac('company_name')])    : null,
+            employee_id:     ac('employee_id')     !== null ? san(r[ac('employee_id')])     : null,
+            name:            ac('name')            !== null ? san(r[ac('name')])            : null,
+            billing_month:   bm,
+            inv_number:      ac('inv_number')      !== null ? san(r[ac('inv_number')])      : null,
+            inv_taxable_amt: ac('inv_taxable_amt') !== null ? num(r[ac('inv_taxable_amt')]) : 0,
+            gst:             ac('gst')             !== null ? num(r[ac('gst')])             : 0,
+            total_inv_amt:   ac('total_inv_amt')   !== null ? num(r[ac('total_inv_amt')])   : 0,
+            tds_rate:        ac('tds_rate')        !== null ? num(r[ac('tds_rate')])        : 0,
+            tds:             ac('tds')             !== null ? num(r[ac('tds')])             : 0,
+            actual_amt:      ac('actual_amt')      !== null ? num(r[ac('actual_amt')])      : 0,
+            advance_debit:   ac('advance_debit')   !== null ? num(r[ac('advance_debit')])   : 0,
+            bank_transfer:   ac('bank_transfer')   !== null ? num(r[ac('bank_transfer')])   : 0,
+            pan_card:        ac('pan_card')        !== null ? san(r[ac('pan_card')])        : null,
+            ifsc_code:       ac('ifsc_code')       !== null ? san(r[ac('ifsc_code')])       : null,
+            account_number:  ac('account_number')  !== null ? san(r[ac('account_number')])  : null,
+            account_name:    ac('account_name')    !== null ? san(r[ac('account_name')])    : null,
+            remarks:         ac('remarks')         !== null ? san(r[ac('remarks')])         : null,
+            naisad_remarks:  ac('naisad_remarks')  !== null ? san(r[ac('naisad_remarks')])  : null,
+            tally_ledger:    ac('tally_ledger')    !== null ? san(r[ac('tally_ledger')])    : null,
+            cost_centre:     ac('cost_centre')     !== null ? san(r[ac('cost_centre')])     : null,
           });
         }
         // Detect month from filename first (most reliable), fall back to billing month majority
@@ -1805,42 +2006,55 @@ async function _edspLoadPeriods() {
   const el = document.getElementById('edsp-periods-list') || document.getElementById('hist-kms-list');
   if (!el) return;
   try {
-    const r = await fetch('/api/admin/historical-edsp-periods');
+    const r = await fetch('/api/admin/historical-edsp-periods', {credentials:'include'});
     const d = await r.json();
     if (!d.length) { el.innerHTML = '<div style="color:var(--text-3);padding:8px 0">No historical data uploaded yet.</div>'; return; }
+
+    // FY tabs for KMS
+    var allFYsKms = _getFYList(d.map(function(p){ return p.period_label; }));
+    if (!_histFY['kms']) _histFY['kms'] = allFYsKms[0];
+    var activeFYkms = _histFY['kms'];
+    var filteredD = d.filter(function(p){ return _monthToFY(p.period_label) === activeFYkms; });
+    var fyTabsHtml = _renderFYTabs('kms', allFYsKms, activeFYkms, _switchFY);
+
     // Check which base months have both -a and -b available for rollup
-    const labels = new Set(d.map(p => p.period_label));
+    const labels = new Set(filteredD.map(p => p.period_label));
     const rollupReady = new Set(
-      d.map(p => p.period_label)
+      filteredD.map(p => p.period_label)
         .filter(l => l.endsWith('-a'))
         .map(l => l.slice(0, -2))
         .filter(base => labels.has(base + '-b'))
     );
 
-    el.innerHTML = `
+    el.innerHTML = fyTabsHtml + `
       <table style="width:100%;font-size:.78rem;border-collapse:collapse">
         <thead>
-          <tr style="border-bottom:2px solid var(--border);text-align:left">
-            <th style="padding:6px 10px;color:var(--text-2)">Period</th>
-            <th style="padding:6px 10px;color:var(--text-2)">Date Range</th>
+          <tr style="border-bottom:2px solid var(--border)">
+            <th style="padding:6px 10px;color:var(--text-2);text-align:left">Period</th>
+            <th style="padding:6px 10px;color:var(--text-2);text-align:left">Date Range</th>
             <th style="padding:6px 10px;color:var(--text-2);text-align:right">Rows</th>
             <th style="padding:6px 10px;color:var(--text-2);text-align:right">Stations</th>
             <th style="padding:6px 10px;color:var(--text-2);text-align:right">ICs</th>
-            <th style="padding:6px 10px"></th>
+            <th style="padding:6px 10px;color:var(--text-2);text-align:right">Total KMs</th>
+            <th style="padding:6px 10px;text-align:right">Actions</th>
           </tr>
         </thead>
         <tbody>
-          ${d.map(p => {
+          ${filteredD.map(p => {
             const base = p.period_label.replace(/-[ab]$/, '');
             const canRollup = p.period_label.endsWith('-a') && rollupReady.has(base);
             return `
             <tr style="border-bottom:1px solid var(--border)">
               <td style="padding:8px 10px;font-weight:600;color:var(--navy)">${escH(p.period_label)}</td>
-              <td style="padding:8px 10px;color:var(--text-2)">${p.date_from} → ${p.date_to}</td>
-              <td style="padding:8px 10px;text-align:right">${Number(p.rows).toLocaleString()}</td>
+              <td style="padding:8px 10px;color:var(--text-2)">${p.date_from||'—'} → ${p.date_to||'—'} ${!p.has_override ? '<span style="font-size:.68rem;color:var(--amber-d);font-style:italic">(auto)</span>' : ''}</td>
+              <td style="padding:8px 10px;text-align:right">${Number(p.total_rows||p.rows||0).toLocaleString()}</td>
               <td style="padding:8px 10px;text-align:right">${p.stations}</td>
               <td style="padding:8px 10px;text-align:right">${p.ics||'—'}</td>
+              <td style="padding:8px 10px;text-align:right;font-weight:600">${p.total_kms ? Number(p.total_kms).toLocaleString('en-IN') : '—'}</td>
               <td style="padding:8px 10px;text-align:right;white-space:nowrap">
+                <button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px;color:${p.has_override?'var(--green-d)':'var(--text-3)'}"
+                  title="${p.has_override?'Edit date range (currently set)':'Set date range for this period'}"
+                  onclick="_edspSetPeriodDates('${escH(p.period_label)}','${p.date_from||''}','${p.date_to||''}',${!!p.has_override})">📅</button>
                 <button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px"
                   onclick="_histReview('kms','${escH(p.period_label)}')">👁 Review</button>
                 ${canRollup ? `<button class="btn btn-ghost btn-sm" style="color:var(--green-d);margin-right:4px"
@@ -1894,7 +2108,7 @@ async function _edspViewPeriod(period) {
   if (station) qp.set('station', station);
 
   try {
-    const r = await fetch('/api/admin/historical-edsp-detail?' + qp);
+    const r = await fetch('/api/admin/historical-edsp-detail?' + qp, {credentials:'include'});
     const d = await r.json();
 
     document.getElementById('edsp-modal-title').textContent = '📋 ' + period + ' — ' + d.rows.length.toLocaleString() + ' rows';
@@ -2004,38 +2218,38 @@ async function _histReview(type, key) {
   try {
     var rows = [], headers = [];
     if (type === 'kms') {
-      var r = await fetch('/api/admin/historical-edsp-detail?period=' + encodeURIComponent(key));
+      var r = await fetch('/api/admin/historical-edsp-detail?period=' + encodeURIComponent(key), {credentials:'include'});
       var d = await r.json();
       headers = ['Station','AMX ID','IC Name','Date','Type','Delivered','Pickup','SWA','SMD','MFN','Returns','KMS'];
       rows = d.rows.map(function(r) { return [r.station_code,r.amx_id,r.ic_name,r.delivery_date,r.parcel_type,r.delivered,r.pickup,r.swa,r.smd,r.mfn,r.returns,r.kms]; });
     } else if (type === 'payroll') {
-      var r2 = await fetch('/api/admin/payroll-history-detail?month=' + encodeURIComponent(key));
+      var r2 = await fetch('/api/admin/payroll-history-detail?month=' + encodeURIComponent(key), {credentials:'include'});
       var d2 = await r2.json();
       headers = ['Station','ID','Head','Name','Present','W/Off','Total','Delivery','Pickup','SWA','SMD','MFN','Sel.Ret','Parcels','Payment','Incentive','Gross','Debit','Net Pay','Advance','TDS','Bank Trf','CTC','Type','Petrol','PAN','User Type','CM'];
       rows = d2.map(function(r) { return [r.station_code,r.staff_id,r.head,r.name,r.present_days,r.week_off,r.total_days,r.delivery,r.pickup,r.swa,r.smd,r.mfn,r.seller_returns,r.total_parcels,r.payment,r.incentive,r.gross_payment,r.debit_note,r.net_pay,r.advance,r.tds,r.bank_transfer,r.ctc,r.pay_type,r.petrol,r.pan_card,r.user_type,r.cluster_manager]; });
     } else if (type === 'dsp-payroll') {
       var parts = key.split('/');
-      var r3 = await fetch('/api/admin/dsp-payroll-detail?month=' + encodeURIComponent(parts[0]) + '&station=' + encodeURIComponent(parts[1]) + '&cycle=' + encodeURIComponent(parts[2]||1));
+      var r3 = await fetch('/api/admin/dsp-payroll-detail?month=' + encodeURIComponent(parts[0]) + '&station=' + encodeURIComponent(parts[1]) + '&cycle=' + encodeURIComponent(parts[2]||1), {credentials:'include'});
       var d3 = await r3.json();
       headers = ['Station','ID','Name','Type','Cycle','A','B','C','D','Z','Payment','Incentive','Gross','Debit','Net Pay','Advance','TDS','Bank Trf','PAN','IFSC','Account'];
       rows = d3.map(function(r) { return [r.station_code,r.staff_id,r.name,r.vehicle_type,r.cycle,r.block_a,r.block_b,r.block_c,r.block_d,r.block_z,r.payment,r.incentive,r.gross_payment,r.debit_note,r.net_pay,r.advance,r.tds,r.bank_transfer,r.pan_card,r.ifsc_code,r.account_number]; });
     } else if (type === 'petrol') {
-      var rp = await fetch('/api/admin/petrol-detail?batch=' + encodeURIComponent(key));
+      var rp = await fetch('/api/admin/petrol-detail?batch=' + encodeURIComponent(key), {credentials:'include'});
       var dp = await rp.json();
       headers = ['Station','Store','ID','Name','Del','Pick','SWA','SMD','MFN','Ret','Parcels','KM','Per KM','Petrol RS','Advance','Bank Trf','Per Parcel','Account','IFSC','CM','Type'];
       rows = dp.map(function(r) { return [r.station_code,r.store_name,r.staff_id,r.name,r.delivered,r.pickup,r.swa,r.smd,r.mfn,r.seller_return,r.total_parcels,r.total_km,r.per_km_rate,r.total_petrol_rs,r.advance_petrol,r.total_bank_transfer,r.per_parcel_cost,r.account_number,r.ifsc_code,r.cm,r.user_type]; });
     } else if (type === 'rent') {
-      var r4 = await fetch('/api/admin/rent-history-detail?month=' + encodeURIComponent(key));
+      var r4 = await fetch('/api/admin/rent-history-detail?month=' + encodeURIComponent(key), {credentials:'include'});
       var d4 = await r4.json();
       headers = ['Station','Station Name','Inv#','Rent','GST','Total','TDS','Payable','Owner','Account','IFSC','PAN','Property','CM'];
       rows = d4.map(function(r) { return [r.station_code,r.station_name,r.inv_number,r.rent_amount,r.gst,r.total_rent,r.tds,r.payable_amount,r.shop_owner_name,r.account_number,r.ifsc_code,r.pan_card_number,r.property_type,r.cm]; });
     } else if (type === 'bank') {
-      var r5b = await fetch('/api/admin/bank-payment-detail?batch=' + encodeURIComponent(key));
+      var r5b = await fetch('/api/admin/bank-payment-detail?batch=' + encodeURIComponent(key), {credentials:'include'});
       var d5b = await r5b.json();
       headers = ['Date','Category','Mode','Beneficiary','Account No','IFSC','Amount','Purpose','Debit Narr','Mobile','Remark'];
       rows = d5b.map(function(r) { return [r.payment_date,r.payment_category,r.pymt_mode,r.debit_narr,r.bene_acc_no,r.bene_ifsc,r.amount,r.bnf_name,r.credit_narr,r.mobile_num,r.remark]; });
     } else if (type === 'addl') {
-      var r5 = await fetch('/api/admin/addl-payments-detail?month=' + encodeURIComponent(key));
+      var r5 = await fetch('/api/admin/addl-payments-detail?month=' + encodeURIComponent(key), {credentials:'include'});
       var d5 = await r5.json();
       headers = ['#','Date','Station','Head','Company','Emp ID','Name','Billing Month','Inv#','Taxable','GST','Total','TDS Rate','TDS','Actual','Adv/Deb','Bank Trf','PAN','IFSC','Account'];
       rows = d5.map(function(r) { return [r.sr_no,r.payment_date,r.station_code,r.payment_head,r.company_name,r.employee_id,r.name,r.billing_month,r.inv_number,r.inv_taxable_amt,r.gst,r.total_inv_amt,r.tds_rate,r.tds,r.actual_amt,r.advance_debit,r.bank_transfer,r.pan_card,r.ifsc_code,r.account_number]; });
@@ -2075,7 +2289,7 @@ async function _rentLoadListDirect() {
   var el = document.getElementById('hist-rent-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/rent-history-months');
+    var r = await fetch('/api/admin/rent-history-months', {credentials:'include'});
     var d = await r.json();
     var totalPay = d.reduce(function(s,p){return s+(parseFloat(p.total_payable)||0);},0);
     var stats = '<span><strong>'+d.length+'</strong> months</span><span>Total Payable: <strong>'+_fmtAmt(totalPay)+'</strong></span>';
@@ -2084,9 +2298,11 @@ async function _rentLoadListDirect() {
       return [p.payment_month, p.station_count, _fmtAmt(p.total_payable), _fmtAmt(p.total_tds),
         '<span style="white-space:nowrap"><button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px" data-m="'+escH(p.payment_month)+'" data-type="rent" onclick="_histReview(this.dataset.type,this.dataset.m)">👁 Review</button><button class="btn btn-ghost btn-sm" style="color:var(--red-d);font-size:.7rem" data-m="'+encodeURIComponent(p.payment_month)+'" onclick="_histDeleteRent(this.dataset.m)">🗑</button></span>'];
     });
-    _histRenderList('rent', el, rows, cols, stats);
+    var fyResult = _filterRowsByFY(rows, d, 'rent', function(item){ return item.payment_month; });
+    _histRenderList('rent', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     var tbody = el.querySelector('tbody');
-    if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){if(d[i])tr.cells[0].innerHTML=_monthBadge(d[i].payment_month);});
+    var fyD = d.filter(function(item){ return _monthToFY(item.payment_month) === (_histFY['rent'] || (fyResult.allFYs||[])[0]); });
+    if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){if(fyD[i])tr.cells[0].innerHTML=_monthBadge(fyD[i].payment_month);});
   } catch(e) { el.innerHTML = '<span style="color:var(--red-d)">Error: '+e.message+'</span>'; }
 }
 
@@ -2094,7 +2310,7 @@ async function _addlLoadListDirect() {
   var el = document.getElementById('hist-addl-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/addl-payments-months');
+    var r = await fetch('/api/admin/addl-payments-months', {credentials:'include'});
     var d = await r.json();
     var totalBank = d.reduce(function(s,p){return s+(parseFloat(p.total_bank_transfer)||0);},0);
     var stats = '<span><strong>'+d.length+'</strong> months</span><span>Bank Transfer total: <strong>'+_fmtAmt(totalBank)+'</strong></span>';
@@ -2103,9 +2319,11 @@ async function _addlLoadListDirect() {
       return [p.payment_month, p.entry_count, _fmtAmt(p.total_bank_transfer), _fmtAmt(p.total_tds),
         '<span style="white-space:nowrap"><button class="btn btn-ghost btn-sm" style="font-size:.7rem;margin-right:4px" data-m="'+escH(p.payment_month)+'" data-type="addl" onclick="_histReview(this.dataset.type,this.dataset.m)">👁 Review</button><button class="btn btn-ghost btn-sm" style="color:var(--red-d);font-size:.7rem" data-m="'+encodeURIComponent(p.payment_month)+'" onclick="_histDeleteAddl(this.dataset.m)">🗑</button></span>'];
     });
-    _histRenderList('addl', el, rows, cols, stats);
+    var fyResult = _filterRowsByFY(rows, d, 'addl', function(item){ return item.payment_month; });
+    _histRenderList('addl', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     var tbody = el.querySelector('tbody');
-    if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){if(d[i])tr.cells[0].innerHTML=_monthBadge(d[i].payment_month);});
+    var fyD = d.filter(function(item){ return _monthToFY(item.payment_month) === (_histFY['addl'] || (fyResult.allFYs||[])[0]); });
+    if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){if(fyD[i])tr.cells[0].innerHTML=_monthBadge(fyD[i].payment_month);});
   } catch(e) { el.innerHTML = '<span style="color:var(--red-d)">Error: '+e.message+'</span>'; }
 }
 
@@ -2113,7 +2331,7 @@ async function _addlLoadListDirect() {
   var el = document.getElementById('hist-addl-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/addl-payments-months');
+    var r = await fetch('/api/admin/addl-payments-months', {credentials:'include'});
     var d = await r.json();
     if (!d.length) { el.innerHTML = '<div style="color:var(--text-3);padding:10px 14px">No additional payments data uploaded yet.</div>'; return; }
     var html = '<table style="width:100%;border-collapse:collapse;font-size:.78rem">' +
@@ -2296,7 +2514,7 @@ async function _bankLoadList() {
   var el = document.getElementById('hist-bank-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/bank-payment-batches');
+    var r = await fetch('/api/admin/bank-payment-batches', {credentials:'include'});
     var d = await r.json();
     var totalAll = d.reduce(function(s,p){return s+(parseFloat(p.total_amount)||0);},0);
     var stats = '<span><strong>'+d.length+'</strong> uploads</span>' +
@@ -2315,10 +2533,12 @@ async function _bankLoadList() {
         '</span>'
       ];
     });
-    _histRenderList('bank', el, rows, cols, stats);
+    var fyResult = _filterRowsByFY(rows, d, 'bank', function(item){ return item.file_date || item.min_date || ''; });
+    _histRenderList('bank', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     var tbody = el.querySelector('tbody');
+    var fyD = d.filter(function(item){ return _monthToFY(item.file_date || item.min_date || '') === (_histFY['bank'] || (fyResult.allFYs||[])[0]); });
     if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){
-      if(d[i] && d[i].file_date) tr.cells[0].innerHTML = '<span style="font-weight:600;color:var(--navy);font-size:.8rem">'+escH(d[i].file_date)+'</span>';
+      if(fyD[i] && fyD[i].file_date) tr.cells[0].innerHTML = '<span style="font-weight:600;color:var(--navy);font-size:.8rem">'+escH(fyD[i].file_date)+'</span>';
     });
   } catch(e) { el.innerHTML = '<span style="color:var(--red-d)">Error: '+e.message+'</span>'; }
 }
@@ -2357,6 +2577,29 @@ function _bankParseXlsx(file) {
         var san = function(v) { return v == null ? null : String(v).trim() || null; };
         var num = function(v) { return v == null ? null : parseFloat(v) || 0; };
 
+        // Build header-based column map (fallback to positional if headers missing)
+        var _bankColMap = makeColMap(raw[0]||[], {
+          pymt_prod_type: ['PYMT PROD TYPE','Product Type','Payment Product Type'],
+          pymt_mode:      ['PYMT MODE','Payment Mode','Mode'],
+          debit_acc_no:   ['DEBIT ACC NO','Debit Account','Debit Acc'],
+          bnf_name:       ['BNF NAME','Beneficiary Name','BNF_NAME','Payment Purpose'],
+          bene_acc_no:    ['BENE ACC NO','Beneficiary Account','Bene Account'],
+          bene_ifsc:      ['BENE IFSC CODE','IFSC Code','IFSC','Bene IFSC'],
+          amount:         ['AMOUNT','Amount','Payment Amount'],
+          debit_narr:     ['DEBIT NARR','Debit Narration','Narration','Beneficiary'],
+          credit_narr:    ['CREDIT NARR','Credit Narration'],
+          mobile_num:     ['MOBILE NO','Mobile','Mobile Number'],
+          email_id:       ['EMAIL ID','Email','Email ID'],
+          remark:         ['REMARKS','Remark','Remarks'],
+          payment_date:   ['PYMT DATE','Payment Date','Date','PYMT_DATE'],
+          ref_no:         ['REF NO','Reference No','Ref No'],
+          addl_info1:     ['ADDL INFO1','Additional Info 1'],
+          addl_info2:     ['ADDL INFO2','Additional Info 2'],
+          addl_info3:     ['ADDL INFO3','Additional Info 3'],
+          addl_info4:     ['ADDL INFO4','Additional Info 4'],
+          addl_info5:     ['ADDL INFO5','Additional Info 5'],
+        });
+
         // Auto-detect payment category from BNF_NAME (col index 3)
         function detectCategory(bnfName) {
           if (!bnfName) return 'Other';
@@ -2374,27 +2617,28 @@ function _bankParseXlsx(file) {
         for (var i = 1; i < raw.length; i++) {
           var r = raw[i];
           if (!r || !r[6]) continue; // skip if no amount
+          var bkc = _bankColMap; // set once before loop
           rows.push({
-            payment_date:     san(r[12]),   // PYMT_DATE
-            payment_category: detectCategory(r[3]),
-            pymt_prod_type:   san(r[0]),
-            pymt_mode:        san(r[1]),
-            debit_acc_no:     san(r[2]),
-            bnf_name:         san(r[3]),    // BNF_NAME (payment purpose)
-            bene_acc_no:      san(r[4]),
-            bene_ifsc:        san(r[5]),
-            amount:           num(r[6]),
-            debit_narr:       san(r[7]),    // Beneficiary name
-            credit_narr:      san(r[8]),
-            mobile_num:       san(r[9]),
-            email_id:         san(r[10]),
-            remark:           san(r[11]),
-            ref_no:           san(r[13]),
-            addl_info1:       san(r[14]),
-            addl_info2:       san(r[15]),
-            addl_info3:       san(r[16]),
-            addl_info4:       san(r[17]),
-            addl_info5:       san(r[18])
+            payment_date:     bkc('payment_date')    !== null ? san(r[bkc('payment_date')])    : san(r[12]),
+            payment_category: detectCategory(bkc('bnf_name') !== null ? r[bkc('bnf_name')] : r[3]),
+            pymt_prod_type:   bkc('pymt_prod_type')  !== null ? san(r[bkc('pymt_prod_type')])  : san(r[0]),
+            pymt_mode:        bkc('pymt_mode')        !== null ? san(r[bkc('pymt_mode')])        : san(r[1]),
+            debit_acc_no:     bkc('debit_acc_no')    !== null ? san(r[bkc('debit_acc_no')])    : san(r[2]),
+            bnf_name:         bkc('bnf_name')        !== null ? san(r[bkc('bnf_name')])        : san(r[3]),
+            bene_acc_no:      bkc('bene_acc_no')     !== null ? san(r[bkc('bene_acc_no')])     : san(r[4]),
+            bene_ifsc:        bkc('bene_ifsc')       !== null ? san(r[bkc('bene_ifsc')])       : san(r[5]),
+            amount:           bkc('amount')          !== null ? num(r[bkc('amount')])          : num(r[6]),
+            debit_narr:       bkc('debit_narr')      !== null ? san(r[bkc('debit_narr')])      : san(r[7]),
+            credit_narr:      bkc('credit_narr')     !== null ? san(r[bkc('credit_narr')])     : san(r[8]),
+            mobile_num:       bkc('mobile_num')      !== null ? san(r[bkc('mobile_num')])      : san(r[9]),
+            email_id:         bkc('email_id')        !== null ? san(r[bkc('email_id')])        : san(r[10]),
+            remark:           bkc('remark')          !== null ? san(r[bkc('remark')])          : san(r[11]),
+            ref_no:           bkc('ref_no')          !== null ? san(r[bkc('ref_no')])          : san(r[13]),
+            addl_info1:       bkc('addl_info1')      !== null ? san(r[bkc('addl_info1')])      : san(r[14]),
+            addl_info2:       bkc('addl_info2')      !== null ? san(r[bkc('addl_info2')])      : san(r[15]),
+            addl_info3:       bkc('addl_info3')      !== null ? san(r[bkc('addl_info3')])      : san(r[16]),
+            addl_info4:       bkc('addl_info4')      !== null ? san(r[bkc('addl_info4')])      : san(r[17]),
+            addl_info5:       bkc('addl_info5')      !== null ? san(r[bkc('addl_info5')])      : san(r[18]),
           });
         }
         resolve({rows:rows, file_date:file_date, batch_id:batch_id});
@@ -2534,7 +2778,7 @@ async function _petrolLoadList() {
   var el = document.getElementById('hist-petrol-list');
   if (!el) return;
   try {
-    var r = await fetch('/api/admin/petrol-periods');
+    var r = await fetch('/api/admin/petrol-periods', {credentials:'include'});
     var d = await r.json();
     if (!Array.isArray(d)) { el.innerHTML = '<div class="hist-empty">No petrol data uploaded yet — click ↑ Upload to add</div>'; return; }
     var totalPetrol = d.reduce(function(s,p){return s+(parseFloat(p.total_petrol)||0);},0);
@@ -2559,7 +2803,8 @@ async function _petrolLoadList() {
         '</span>'
       ];
     });
-    _histRenderList('petrol', el, rows, cols, stats);
+    var fyResult = _filterRowsByFY(rows, d, 'petrol', function(item){ return item.upload_date || ''; });
+    _histRenderList('petrol', el, fyResult.rows, cols, stats, null, fyResult.fyHtml);
     // Highlight rows with no period set
     var tbody = el.querySelector('tbody');
     if (tbody) Array.from(tbody.querySelectorAll('tr')).forEach(function(tr,i){
@@ -2791,92 +3036,76 @@ function _petrolParseXlsx(file) {
           period_label = dm[1] + ' to ' + dm[2];
         }
 
+        // Header-based column map — works across all petrol format versions
+        var pc = makeColMap(raw[0]||[], {
+          station_code:        ['Station Code','Station'],
+          store_name:          ['Store Name','Station Name','Store'],
+          staff_id:            ['ID','E.ID','Emp ID','Employee ID'],
+          name:                ['Name','Employee Name'],
+          associate_id:        ['Associate ID','Amazon ID','Amz ID'],
+          delivered:           ['Delivered Parcel','Delivery - Bifme','Delivery - EDSP','Delivery'],
+          pickup:              ['Pick up','Pick-up','Pick up - Bifme','Pickup'],
+          swa:                 ['SWA','V.Bifme'],
+          smd:                 ['SMD'],
+          mfn:                 ['MFN','MFN - Bifme','MFN - EDSP'],
+          seller_return:       ['Seller Return','Seller Returns - EDSP','Seller Returns'],
+          total_parcels:       ['Total Parcel By CM','Approved Parcel By CM','Total Parcels','Approved Parcel'],
+          total_km:            ['Total KM Approved By CM','Approved KM By CM','Total KM'],
+          per_km_rate:         ['Per KM Rate','KM Rate'],
+          total_petrol_rs:     ['Total Petrol RS','Total Pay RS - Petrol','Total Petrol','Total Pay RS'],
+          advance_petrol:      ['Advance Petrol','Advance','Advanced'],
+          total_bank_transfer: ['Total Bank Transfer','Bank Transfer','Total Pay - Bank transfer','Bank transfer RS'],
+          per_parcel_cost:     ['Per Parcel  Petrol Cost','Per Parcel Petrol Cost','Per parcel cost','Per Parcel Cost'],
+          average:             ['Average'],
+          account_number:      ['Account Number','Account No'],
+          ifsc_code:           ['IFSC Code','IFSC'],
+          cm:                  ['CM','Cluster Manager'],
+          user_type:           ['Designation','User type','User Type'],
+          remarks:             ['Remakrs','Remarks','Remark'],
+          tally_ledger:        ['Tally Ledger','Tally Ledger Name'],
+          cost_centre:         ['Cost Centre','Cost Center'],
+        });
+
+        var layout = 'Header-mapped';
         var rows = [];
         for (var i=1; i<raw.length; i++) {
           var r = raw[i];
-          var staffId;
-
-          if (isOldFormat) {
-            // Old 39-col: [0]=Station,[1]=Store,[2]=E.ID,[3]=Payroll Head,[4]=Employee Name,
-            // [5]=Amazon ID,[16]=Total KM(Approve),[17]=Approved Parcel,[18]=Approved KM,
-            // [20]=Per KM Rate,[21]=Total Pay RS Petrol,[22]=Advance,[23]=Bank Transfer,
-            // [24]=CTC,[26]=Per parcel cost,[27]=Average,[28]=Remarks,
-            // [29]=IFSC,[30]=Account,[31]=Name,[32]=CM,[33]=Designation,
-            // [37]=Tally Ledger,[38]=Cost Centre
-            if (!r || !r[2]) continue;
-            staffId = parseInt(r[2]);
-            if (!staffId || isNaN(staffId)) continue;
-            rows.push({
-              period_from:         period_from,
-              period_to:           period_to,
-              station_code:        san(r[0]),
-              store_name:          san(r[1]),
-              staff_id:            staffId,
-              name:                san(r[4]),
-              associate_id:        san(r[5]),
-              delivered:           0,
-              pickup:              0,
-              swa:                 0,
-              smd:                 0,
-              mfn:                 num(r[11]),
-              seller_return:       num(r[13]),
-              total_parcels:       num(r[17]),
-              total_km:            num(r[18]),
-              per_km_rate:         num(r[20]),
-              total_petrol_rs:     num(r[21]),
-              advance_petrol:      num(r[22]),
-              total_bank_transfer: num(r[23]),
-              per_parcel_cost:     num(r[26]),
-              average:             num(r[27]),
-              account_number:      san(r[30]),
-              ifsc_code:           san(r[29]),
-              cm:                  san(r[32]),
-              user_type:           san(r[33]),
-              remarks:             san(r[28]),
-              tally_ledger:        san(r[37]),
-              cost_centre:         san(r[38])
-            });
-          } else {
-            // New format (25-26 col, station or store first)
-            // [iStation]=Station,[iStore]=Store,[2]=ID,[3]=Name,[4]=Associate ID,
-            // [5]=Delivered,[6]=Pickup,[7]=SWA,[8]=SMD,[9]=MFN,[10]=Seller Return,
-            // [11]=Total Parcels,[12]=Total KM,[13]=Per KM Rate,[14]=Total Petrol,
-            // [15]=Advance,[16]=Bank Transfer,[17]=Per Parcel Cost,[18]=Average,
-            // [19]=Account,[20]=IFSC,[21]=CM,[22]=User Type,[23]=Remarks,[24]=Tally,[25]=Cost Centre
-            if (!r || !r[2]) continue;
-            staffId = parseInt(r[2]);
-            if (!staffId || isNaN(staffId)) continue;
-            rows.push({
-              period_from:         period_from,
-              period_to:           period_to,
-              station_code:        san(r[iStation]),
-              store_name:          san(r[iStore]),
-              staff_id:            staffId,
-              name:                san(r[3]),
-              associate_id:        san(r[4]),
-              delivered:           num(r[5]),
-              pickup:              num(r[6]),
-              swa:                 num(r[7]),
-              smd:                 num(r[8]),
-              mfn:                 num(r[9]),
-              seller_return:       num(r[10]),
-              total_parcels:       num(r[11]),
-              total_km:            num(r[12]),
-              per_km_rate:         num(r[13]),
-              total_petrol_rs:     num(r[14]),
-              advance_petrol:      num(r[15]),
-              total_bank_transfer: num(r[16]),
-              per_parcel_cost:     num(r[17]),
-              average:             num(r[18]),
-              account_number:      san(r[19]),
-              ifsc_code:           san(r[20]),
-              cm:                  san(r[21]),
-              user_type:           san(r[22]),
-              remarks:             san(r[23]),
-              tally_ledger:        san(r[24]),
-              cost_centre:         san(r[25])
-            });
-          }
+          var sidIdx = pc('staff_id');
+          if (sidIdx === null) continue;
+          var staffId = parseInt(r[sidIdx]);
+          if (!staffId || isNaN(staffId)) continue;
+          var stIdx = pc('station_code');
+          var stVal = stIdx !== null ? san(r[stIdx]) : null;
+          rows.push({
+            period_from:         period_from,
+            period_to:           period_to,
+            station_code:        stVal,
+            store_name:          pc('store_name')        !== null ? san(r[pc('store_name')])        : null,
+            staff_id:            staffId,
+            name:                pc('name')              !== null ? san(r[pc('name')])              : null,
+            associate_id:        pc('associate_id')      !== null ? san(r[pc('associate_id')])      : null,
+            delivered:           pc('delivered')         !== null ? num(r[pc('delivered')])         : 0,
+            pickup:              pc('pickup')            !== null ? num(r[pc('pickup')])            : 0,
+            swa:                 pc('swa')               !== null ? num(r[pc('swa')])               : 0,
+            smd:                 pc('smd')               !== null ? num(r[pc('smd')])               : 0,
+            mfn:                 pc('mfn')               !== null ? num(r[pc('mfn')])               : 0,
+            seller_return:       pc('seller_return')     !== null ? num(r[pc('seller_return')])     : 0,
+            total_parcels:       pc('total_parcels')     !== null ? num(r[pc('total_parcels')])     : 0,
+            total_km:            pc('total_km')          !== null ? num(r[pc('total_km')])          : 0,
+            per_km_rate:         pc('per_km_rate')       !== null ? num(r[pc('per_km_rate')])       : 0,
+            total_petrol_rs:     pc('total_petrol_rs')   !== null ? num(r[pc('total_petrol_rs')])   : 0,
+            advance_petrol:      pc('advance_petrol')    !== null ? num(r[pc('advance_petrol')])    : 0,
+            total_bank_transfer: pc('total_bank_transfer')!==null ? num(r[pc('total_bank_transfer')]): 0,
+            per_parcel_cost:     pc('per_parcel_cost')   !== null ? num(r[pc('per_parcel_cost')])   : 0,
+            average:             pc('average')           !== null ? num(r[pc('average')])           : 0,
+            account_number:      pc('account_number')    !== null ? san(r[pc('account_number')])    : null,
+            ifsc_code:           pc('ifsc_code')         !== null ? san(r[pc('ifsc_code')])         : null,
+            cm:                  pc('cm')                !== null ? san(r[pc('cm')])                : null,
+            user_type:           pc('user_type')         !== null ? san(r[pc('user_type')])         : null,
+            remarks:             pc('remarks')           !== null ? san(r[pc('remarks')])           : null,
+            tally_ledger:        pc('tally_ledger')      !== null ? san(r[pc('tally_ledger')])      : null,
+            cost_centre:         pc('cost_centre')       !== null ? san(r[pc('cost_centre')])       : null,
+          });
         }
         var batchId = file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
         resolve({rows:rows, layout:layout, filename:file.name, upload_batch:batchId, period_from:period_from, period_to:period_to});
@@ -2885,6 +3114,128 @@ function _petrolParseXlsx(file) {
     reader.onerror = function() { reject(new Error('Failed to read file')); };
     reader.readAsArrayBuffer(file);
   });
+}
+
+// ── KMS/EDSP period date range setter ────────────────────────────────────────
+function _edspSetPeriodDates(period, currentFrom, currentTo, hasOverride) {
+  var existing = document.getElementById('_edsp-period-modal');
+  if (existing) existing.remove();
+
+  var modal = document.createElement('div');
+  modal.id = '_edsp-period-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = [
+    '<div style="background:var(--card);border-radius:16px;width:100%;max-width:500px;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden">',
+      '<div style="padding:22px 24px 16px;border-bottom:1px solid var(--border)">',
+        '<div style="font-size:1rem;font-weight:700;color:var(--navy)">📅 Set Period Date Range</div>',
+        '<div style="font-size:.78rem;color:var(--text-3);margin-top:3px">Override date range for period <strong>' + escH(period) + '</strong></div>',
+        (!hasOverride ? '<div style="font-size:.75rem;color:var(--amber-d);margin-top:4px">⚠ Currently showing auto-detected dates from delivery data</div>' : ''),
+      '</div>',
+      '<div style="padding:20px 24px">',
+        '<div style="display:flex;border:2px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .15s" id="_ep-box">',
+          '<div style="flex:1;padding:14px 16px;border-right:1px solid var(--border);cursor:pointer" id="_ep-from-box">',
+            '<div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);margin-bottom:8px">✈ PERIOD START</div>',
+            '<input type="date" id="_ep-from" value="' + (currentFrom||'') + '" style="border:none;background:transparent;font-size:1rem;font-weight:700;color:var(--navy);width:100%;outline:none;cursor:pointer" onchange="_epUpdate()">',
+            '<div style="font-size:.72rem;color:var(--text-3);margin-top:4px" id="_ep-from-lbl">' + (currentFrom ? _edspFmtDate(currentFrom) : 'Click to select') + '</div>',
+          '</div>',
+          '<div style="flex:1;padding:14px 16px;cursor:pointer" id="_ep-to-box">',
+            '<div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);margin-bottom:8px">🏁 PERIOD END</div>',
+            '<input type="date" id="_ep-to" value="' + (currentTo||'') + '" style="border:none;background:transparent;font-size:1rem;font-weight:700;color:var(--navy);width:100%;outline:none;cursor:pointer" onchange="_epUpdate()">',
+            '<div style="font-size:.72rem;color:var(--text-3);margin-top:4px" id="_ep-to-lbl">' + (currentTo ? _edspFmtDate(currentTo) : 'Click to select') + '</div>',
+          '</div>',
+        '</div>',
+        '<div id="_ep-hint" style="margin-top:12px;min-height:22px;text-align:center;font-size:.8rem"></div>',
+      '</div>',
+      '<div style="display:flex;justify-content:flex-end;gap:8px;padding:0 24px 20px">',
+        (hasOverride ? '<button class="btn btn-ghost" id="_ep-clear" style="margin-right:auto;color:var(--amber-d)">Clear Override</button>' : ''),
+        '<button class="btn btn-ghost" id="_ep-cancel">Cancel</button>',
+        '<button class="btn btn-green" id="_ep-save">Save Period</button>',
+      '</div>',
+    '</div>'
+  ].join('');
+
+  document.body.appendChild(modal);
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+
+  document.getElementById('_ep-cancel').onclick = function() { modal.remove(); };
+  document.getElementById('_ep-from-box').onclick = function() {
+    var f = document.getElementById('_ep-from'); if(f){if(f.showPicker)f.showPicker();f.focus();}
+  };
+  document.getElementById('_ep-to-box').onclick = function() {
+    var t = document.getElementById('_ep-to'); if(t){if(t.showPicker)t.showPicker();t.focus();}
+  };
+  document.getElementById('_ep-save').onclick = function() { _epSave(period); };
+  var clearBtn = document.getElementById('_ep-clear');
+  if (clearBtn) clearBtn.onclick = function() { _epSaveDates(period, null, null); };
+
+  // Auto-advance to end when start selected
+  document.getElementById('_ep-from').addEventListener('change', function() {
+    var to = document.getElementById('_ep-to');
+    if (this.value && to && !to.value) {
+      setTimeout(function(){var t=document.getElementById('_ep-to');if(t){if(t.showPicker)t.showPicker();t.focus();}},100);
+    }
+    _epUpdate();
+  });
+  _epUpdate();
+}
+
+function _edspFmtDate(v) {
+  if (!v) return 'Click to select';
+  var p = v.split('-'); var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return p[2]+' '+months[parseInt(p[1])-1]+' '+p[0];
+}
+
+function _epUpdate() {
+  var from = document.getElementById('_ep-from');
+  var to   = document.getElementById('_ep-to');
+  var hint = document.getElementById('_ep-hint');
+  var fl   = document.getElementById('_ep-from-lbl');
+  var tl   = document.getElementById('_ep-to-lbl');
+  if (!from || !to) return;
+  if (fl) fl.textContent = _edspFmtDate(from.value) || 'Click to select';
+  if (tl) tl.textContent = _edspFmtDate(to.value)   || 'Click to select';
+  if (from.value && to.value) {
+    if (from.value > to.value) {
+      if (hint) hint.innerHTML = '<span style="color:var(--red-d)">⚠ End date must be after start date</span>';
+    } else {
+      var days = Math.round((new Date(to.value)-new Date(from.value))/86400000)+1;
+      if (hint) hint.innerHTML = '<span style="color:var(--green-d);font-weight:600">✓ '+days+' day period — '+_edspFmtDate(from.value)+' to '+_edspFmtDate(to.value)+'</span>';
+    }
+  } else {
+    if (hint) hint.innerHTML = '';
+  }
+}
+
+async function _epSave(period) {
+  var from = document.getElementById('_ep-from');
+  var to   = document.getElementById('_ep-to');
+  if (!from || !to || !from.value || !to.value) {
+    _showResultModal('⚠️ Both Dates Required', 'Please select both start and end dates.', 'info'); return;
+  }
+  if (from.value > to.value) {
+    _showResultModal('⚠️ Invalid Range', 'End date must be after start date.', 'info'); return;
+  }
+  await _epSaveDates(period, from.value, to.value);
+}
+
+async function _epSaveDates(period, from, to) {
+  try {
+    var r = await fetch('/api/admin/edsp-period-dates/' + encodeURIComponent(period), {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({period_from: from, period_to: to})
+    });
+    var d = await r.json();
+    var modal = document.getElementById('_edsp-period-modal');
+    if (modal) modal.remove();
+    if (d.ok) {
+      _showResultModal('✅ ' + (from ? 'Period Saved' : 'Override Cleared'),
+        from ? (from + ' → ' + to) : 'Date override removed. Auto-detected dates will be shown.',
+        'success');
+      _edspLoadPeriods();
+    } else {
+      _showResultModal('❌ Error', d.error||'Save failed', 'error');
+    }
+  } catch(e) { _showResultModal('❌ Error', e.message, 'error'); }
 }
 
 // ── Modern confirm/result modals ──────────────────────────────────────────────
@@ -3116,3 +3467,191 @@ function _editBankPeriod(batch, oldDate) {
 }
 
 // Replace old petrol prompt with modal
+
+
+// ── EXPORT WITH FACE VERIFY ──────────────────────────────────────────────────
+
+var _exportPending = null; // {type, params, label}
+
+// Strip key → export config
+var _EXPORT_CONFIG = {
+  'kms':         { label:'KMS / EDSP Data',       endpoint:'/api/admin/export/kms',         paramKey:'period',  paramLabel:'Period',  paramEl:'#hist-kms-period-sel' },
+  'payroll':     { label:'EDSP Payroll',           endpoint:'/api/admin/export/payroll',     paramKey:'month',   paramLabel:'Month',   paramEl:'#hist-payroll-month-sel' },
+  'dsp-payroll': { label:'DSP Payroll',            endpoint:'/api/admin/export/dsp-payroll', paramKey:'month',   paramLabel:'Month',   paramEl:'#hist-dsp-month-sel' },
+  'petrol':      { label:'Petrol Expenses',        endpoint:'/api/admin/export/petrol',      paramKey:'batch',   paramLabel:'Batch',   paramEl:'#hist-petrol-batch-sel' },
+  'rent':        { label:'Rent Payments',          endpoint:'/api/admin/export/rent',        paramKey:'month',   paramLabel:'Month',   paramEl:'#hist-rent-month-sel' },
+  'addl':        { label:'Additional Payments',    endpoint:'/api/admin/export/addl',        paramKey:'month',   paramLabel:'Month',   paramEl:'#hist-addl-month-sel' },
+  'bank':        { label:'Bank Payments',          endpoint:'/api/admin/export/bank',        paramKey:'batch',   paramLabel:'Batch',   paramEl:'#hist-bank-batch-sel' },
+  'invoices':    { label:'Amazon Invoices',        endpoint:'/api/admin/export/invoices',    paramKey:'station', paramLabel:'Station', paramEl:'#inv-station' }
+};
+
+function _histExport(key) {
+  var cfg = _EXPORT_CONFIG[key];
+  if (!cfg) return;
+
+  // Get current filter value from the open strip
+  var paramEl = document.querySelector(cfg.paramEl);
+  var paramVal = paramEl ? paramEl.value : '';
+
+  // Build label for what's being exported
+  var scopeLabel = paramVal ? (cfg.paramLabel + ': ' + paramVal) : 'All';
+
+  _exportPending = { type: key, endpoint: cfg.endpoint, paramKey: cfg.paramKey, paramVal: paramVal, label: cfg.label + ' (' + scopeLabel + ')' };
+
+  // Show face verify modal
+  _showExportVerifyModal();
+}
+
+function _showExportVerifyModal() {
+  // Use logged-in user's name directly — already authenticated, no second password needed
+  var user = window._adminUser || JSON.parse(sessionStorage.getItem('adm_user') || 'null');
+  if (user && user.name) {
+    if (_exportPending) toast('Exporting ' + escH(_exportPending.label) + '…', 'info');
+    _runExport(user.name);
+    return;
+  }
+  // Fallback (session not loaded) — ask name only, no password
+  var existing = document.getElementById('export-verify-modal');
+  if (existing) existing.remove();
+  var modal = document.createElement('div');
+  modal.id = 'export-verify-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML =
+    '<div style="background:var(--card);border-radius:14px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden">' +
+      '<div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">' +
+        '<div style="font-size:1.3rem">📥</div>' +
+        '<div style="font-weight:700;font-size:.95rem;color:var(--navy)">Export: ' + (_exportPending ? escH(_exportPending.label) : '') + '</div>' +
+        '<button onclick="document.getElementById(\'export-verify-modal\').remove()" style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-3)">×</button>' +
+      '</div>' +
+      '<div style="padding:20px">' +
+        '<div style="margin-bottom:14px">' +
+          '<label style="font-size:.8rem;color:var(--text-2);display:block;margin-bottom:5px;font-weight:500">Your Name (for audit log)</label>' +
+          '<input type="text" id="export-name" placeholder="Your name…" onkeydown="if(event.key===\'Enter\')_exportVerifySubmit()" ' +
+          'style="width:100%;box-sizing:border-box;padding:9px 12px;font-size:.88rem;border:1.5px solid var(--border);border-radius:8px;font-family:inherit">' +
+        '</div>' +
+        '<div id="export-verify-err" style="font-size:.8rem;color:var(--red-d);margin-bottom:10px;display:none"></div>' +
+        '<button onclick="_exportVerifySubmit()" style="width:100%;padding:10px;font-size:.88rem;font-weight:700;border:none;border-radius:8px;background:var(--navy);color:#fff;cursor:pointer">📥 Export Excel</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  setTimeout(function(){ var el = document.getElementById('export-name'); if(el) el.focus(); }, 100);
+}
+
+function _exportVerifySubmit() {
+  var name = (document.getElementById('export-name') || {}).value || '';
+  var errEl = document.getElementById('export-verify-err');
+  if (!name.trim()) { errEl.textContent = 'Please enter your name.'; errEl.style.display='block'; return; }
+  var modal = document.getElementById('export-verify-modal');
+  if (modal) modal.remove();
+  _runExport(name.trim());
+}
+
+async function _runExport(exportedBy) {
+  if (!_exportPending) return;
+  var cfg = _exportPending;
+
+  try {
+    toast('Preparing export…', 'info');
+
+    // Build query params
+    var qp = new URLSearchParams();
+    qp.set('exported_by', exportedBy);
+    if (cfg.paramVal) qp.set(cfg.paramKey, cfg.paramVal);
+
+    // Special handling for invoices — also pass from/to/entity
+    if (cfg.type === 'invoices') {
+      var from = (document.getElementById('inv-from') || {}).value || '';
+      var to   = (document.getElementById('inv-to')   || {}).value || '';
+      var ent  = (document.getElementById('inv-entity') || {}).value || '';
+      if (from) qp.set('from', from + '-01');
+      if (to)   qp.set('to', to + '-01');
+      if (ent)  qp.set('entity', ent);
+    }
+
+    var r = await fetch(cfg.endpoint + '?' + qp);
+    var data = await r.json();
+
+    if (!Array.isArray(data) || !data.length) {
+      toast('No data to export for selected filters.', 'warning'); return;
+    }
+
+    // Build XLSX using SheetJS
+    _generateXlsx(data, cfg.label, exportedBy);
+
+  } catch(e) {
+    toast('Export failed: ' + e.message, 'error');
+  }
+  _exportPending = null;
+}
+
+function _generateXlsx(data, sheetName, exportedBy) {
+  if (typeof XLSX === 'undefined') { toast('XLSX library not loaded.', 'error'); return; }
+
+  // Flatten any nested objects
+  var rows = data.map(function(row) {
+    var flat = {};
+    Object.keys(row).forEach(function(k) {
+      var v = row[k];
+      if (v !== null && typeof v === 'object') {
+        flat[k] = JSON.stringify(v);
+      } else {
+        flat[k] = v;
+      }
+    });
+    return flat;
+  });
+
+  var ws = XLSX.utils.json_to_sheet(rows);
+  var wb = XLSX.utils.book_new();
+  var safeSheet = sheetName.replace(/[\\/*?:[\]]/g, '').substring(0, 31);
+  XLSX.utils.book_append_sheet(wb, ws, safeSheet);
+
+  // Add export info sheet
+  var infoData = [
+    ['Export Label', sheetName],
+    ['Exported By', exportedBy],
+    ['Exported At', new Date().toLocaleString('en-IN')],
+    ['Row Count', rows.length]
+  ];
+  var wsInfo = XLSX.utils.aoa_to_sheet(infoData);
+  XLSX.utils.book_append_sheet(wb, wsInfo, 'Export Info');
+
+  var filename = safeSheet.replace(/\s+/g, '_') + '_' + new Date().toISOString().substring(0,10) + '.xlsx';
+  XLSX.writeFile(wb, filename);
+  toast('✓ Exported ' + rows.length + ' rows as ' + filename, 'success');
+}
+
+// ── EXPORT LOG VIEWER ────────────────────────────────────────────────────────
+async function showExportLog() {
+  try {
+    var rows = await fetch('/api/admin/export-log').then(function(r){ return r.json(); });
+    var modal = document.getElementById('hist-upload-modal');
+    var title = document.getElementById('hist-upload-title');
+    var cont  = document.getElementById('hist-upload-content');
+    if (!modal) return;
+    title.textContent = '📋 Export Audit Log';
+    var html = '<table style="width:100%;font-size:.8rem;border-collapse:collapse">' +
+      '<thead><tr style="border-bottom:2px solid var(--border)">' +
+      '<th style="padding:6px 8px;text-align:left">Type</th>' +
+      '<th style="padding:6px 8px;text-align:left">Exported By</th>' +
+      '<th style="padding:6px 8px;text-align:left">Filters</th>' +
+      '<th style="padding:6px 8px;text-align:right">Rows</th>' +
+      '<th style="padding:6px 8px;text-align:left">When</th>' +
+      '</tr></thead><tbody>';
+    (Array.isArray(rows) ? rows : []).forEach(function(r) {
+      var params = '';
+      try { var p = JSON.parse(r.export_params||'{}'); params = Object.entries(p).filter(function(e){ return e[1]; }).map(function(e){ return e[0]+': '+e[1]; }).join(', '); } catch(e2){}
+      html += '<tr style="border-bottom:1px solid var(--border)">' +
+        '<td style="padding:6px 8px;font-weight:600;color:var(--navy)">' + escH(r.export_type) + '</td>' +
+        '<td style="padding:6px 8px">' + escH(r.exported_by) + '</td>' +
+        '<td style="padding:6px 8px;color:var(--text-3);font-size:.76rem">' + escH(params||'—') + '</td>' +
+        '<td style="padding:6px 8px;text-align:right;font-family:monospace">' + (r.row_count||0) + '</td>' +
+        '<td style="padding:6px 8px;color:var(--text-3);white-space:nowrap">' + escH(String(r.exported_at).substring(0,16)) + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    if (!rows.length) html = '<div style="text-align:center;padding:32px;color:var(--text-3)">No exports logged yet</div>';
+    cont.innerHTML = html;
+    modal.style.display = 'flex';
+  } catch(e) { toast('Failed to load log: ' + e.message, 'error'); }
+}

@@ -43,7 +43,7 @@ function renderAdv(tab){
           <td><strong>${ic.icName}</strong></td>
           <td><span style="font-family:'DM Mono',monospace;font-size:.78rem">${ic.icId}</span></td>
           <td style="text-align:right;font-weight:600">₹${Number(ic.amount).toLocaleString('en-IN')}</td>
-          <td style="color:var(--text-2)">${ic.reason||'-'}</td>
+          <td style="max-width:160px">${truncRemark(ic.reason)}</td>
           <td style="font-size:.72rem;color:var(--green-d);font-weight:600">${ic.verifiedBy||'-'}</td>
           <td style="font-size:.72rem;color:var(--text-3);white-space:nowrap">${fmtAdvDate(ic.submittedAt)}</td>
         </tr>`).join('')
@@ -112,41 +112,12 @@ function advStartFaceVerif(){
   if(!icId){ toast('Please select an IC first.','warning'); return; }
 
   document.getElementById('adv-verif-overlay').style.display = 'none';
-
   window._faceVerifyCallback = (verifiedName) => { advFinalCommit(verifiedName); };
-
-  face.icId = icId;
-  face.icName = icName;
-  face.action = 'VERIFY_SUBMIT';
-  const labels = document.getElementById('face-mode-lbl');
-  const nameEl  = document.getElementById('face-name-lbl');
-  if(labels) labels.textContent = 'ADVANCE SUBMISSION';
-  if(nameEl)  nameEl.textContent = icName;
-  document.getElementById('shift-result').style.display = 'none';
-  document.getElementById('v-wrap').style.display = 'block';
-  setFaceStatus('idle','Initialising camera…');
-  const btn = document.getElementById('btn-face-action');
-  btn.disabled = true;
-  btn.textContent = 'Verify & Submit';
-  btn.className = 'btn btn-primary';
-  document.getElementById('face-ring').className = 'face-ring';
-  document.getElementById('face-overlay').classList.remove('hidden');
-  navigator.mediaDevices.getUserMedia({video:{width:640,facingMode:'user'}})
-    .then(stream=>{
-      face.stream = stream;
-      const vid = document.getElementById('face-video');
-      vid.srcObject = stream;
-      vid.onloadedmetadata = ()=>{
-        if(face.aiReady){ setFaceStatus('idle','Ready — click Verify & Submit'); btn.disabled=false; }
-        else{
-          setFaceStatus('scanning','Loading AI…');
-          const w = setInterval(()=>{
-            if(face.aiReady){ clearInterval(w); setFaceStatus('idle','Ready — click Verify & Submit'); btn.disabled=false; }
-          },500);
-        }
-      };
-    })
-    .catch(()=>setFaceStatus('error','Camera access denied'));
+  openFace(icId, icName, true, false, 'VERIFY_SUBMIT');
+  setTimeout(function() {
+    const lbl = document.getElementById('face-mode-lbl');
+    if (lbl) lbl.textContent = 'ADVANCE VERIFY';
+  }, 50);
 }
 
 // ── SUBMIT ───────────────────────────────────────────────────
@@ -192,6 +163,6 @@ function showAdvSummary(data){
   const cols=document.getElementById('sum-cols');if(cols)cols.innerHTML='';
   document.getElementById('sum-head').innerHTML='<tr><th>IC Name</th><th>Amount</th><th>Reason</th></tr>';
   document.getElementById('sum-body').innerHTML=(data||[]).map(r=>
-    `<tr><td>${r.name||r.icName||''}</td><td style="text-align:center">₹${r.amount||0}</td><td>${r.reason||'-'}</td></tr>`
+    `<tr><td>${r.name||r.icName||''}</td><td style="text-align:center">₹${r.amount||0}</td><td style="max-width:160px">${truncRemark(r.reason)}</td></tr>`
   ).join('')||'<tr class="empty-row"><td colspan="3">No records</td></tr>';
 }

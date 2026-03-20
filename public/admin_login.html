@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShipLocal Admin — Login</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --navy:#0f2744;--blue:#2563eb;--blue-bg:#eff6ff;
+    --border:#e2e8f0;--bg:#f1f5f9;--card:#fff;
+    --text:#1e293b;--text-2:#475569;--text-3:#94a3b8;
+    --red-d:#dc2626;--green-d:#16a34a;
+    --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05);
+    --r:12px;
+  }
+  body{min-height:100vh;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'DM Sans',system-ui,sans-serif;color:var(--text)}
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@500&display=swap');
+
+  .login-wrap{width:100%;max-width:400px;padding:24px 16px}
+  .brand{text-align:center;margin-bottom:32px}
+  .brand-logo{width:52px;height:52px;background:var(--navy);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:1.6rem;margin-bottom:12px}
+  .brand-name{font-size:1.3rem;font-weight:700;color:var(--navy)}
+  .brand-sub{font-size:.82rem;color:var(--text-3);margin-top:2px}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:32px 28px;box-shadow:var(--shadow)}
+  .card-title{font-size:1rem;font-weight:700;color:var(--navy);margin-bottom:24px;text-align:center}
+
+  .field{margin-bottom:18px}
+  .field label{display:block;font-size:.8rem;font-weight:600;color:var(--text-2);margin-bottom:6px}
+  .field input{width:100%;padding:10px 14px;font-size:.9rem;border:1.5px solid var(--border);border-radius:9px;outline:none;font-family:inherit;transition:border-color .15s;background:var(--bg);color:var(--text)}
+  .field input:focus{border-color:var(--blue);background:#fff}
+  .field input.err{border-color:var(--red-d)}
+
+  .btn-login{width:100%;padding:11px;font-size:.95rem;font-weight:700;border:none;border-radius:9px;background:var(--navy);color:#fff;cursor:pointer;transition:opacity .15s;margin-top:4px;font-family:inherit}
+  .btn-login:hover{opacity:.9}
+  .btn-login:disabled{opacity:.6;cursor:default}
+
+  .err-msg{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;font-size:.82rem;color:var(--red-d);margin-bottom:16px;display:none}
+  .err-msg.show{display:block}
+
+  .footer{text-align:center;margin-top:20px;font-size:.75rem;color:var(--text-3)}
+
+  /* Force-change-password overlay */
+  .change-pw-overlay{display:none;position:fixed;inset:0;background:rgba(15,39,68,.55);z-index:999;align-items:center;justify-content:center;padding:20px}
+  .change-pw-overlay.show{display:flex}
+  .change-pw-card{background:#fff;border-radius:var(--r);padding:32px 28px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+  .change-pw-card h2{font-size:.95rem;font-weight:700;color:var(--navy);margin-bottom:6px}
+  .change-pw-card p{font-size:.82rem;color:var(--text-2);margin-bottom:20px}
+</style>
+</head>
+<body>
+
+<div class="login-wrap">
+  <div class="brand">
+    <div class="brand-logo">🚚</div>
+    <div class="brand-name">ShipLocal Admin</div>
+    <div class="brand-sub">Warehouse Management Portal</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Sign in to your account</div>
+    <div class="err-msg" id="err-msg"></div>
+    <div class="field">
+      <label for="email">Email address</label>
+      <input type="email" id="email" placeholder="you@shiplocal.in" autocomplete="email" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" placeholder="Enter your password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn-login" id="btn-login" onclick="doLogin()">Sign In →</button>
+  </div>
+  <div class="footer">ShipLocal Logistics · Admin Portal v4.0</div>
+</div>
+
+<!-- Force password change overlay -->
+<div class="change-pw-overlay" id="force-pw-overlay">
+  <div class="change-pw-card">
+    <h2>🔒 Set a new password</h2>
+    <p>Your password was reset by an admin. Please set a new password to continue.</p>
+    <div class="err-msg" id="pw-err-msg"></div>
+    <div class="field">
+      <label>New Password (min. 8 characters)</label>
+      <input type="password" id="new-pw" placeholder="New password" onkeydown="if(event.key==='Enter')doChangePw()">
+    </div>
+    <div class="field">
+      <label>Confirm New Password</label>
+      <input type="password" id="confirm-pw" placeholder="Confirm password" onkeydown="if(event.key==='Enter')doChangePw()">
+    </div>
+    <button class="btn-login" id="btn-change-pw" onclick="doChangePw()">Set Password & Continue →</button>
+  </div>
+</div>
+
+<script>
+async function doLogin() {
+  var email = document.getElementById('email').value.trim();
+  var pw    = document.getElementById('password').value;
+  var errEl = document.getElementById('err-msg');
+  var btn   = document.getElementById('btn-login');
+
+  if (!email || !pw) { showErr(errEl, 'Please enter your email and password.'); return; }
+
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  errEl.classList.remove('show');
+
+  try {
+    var r = await fetch('/api/admin/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email, password: pw})
+    });
+    var d = await r.json();
+    if (!r.ok) {
+      showErr(errEl, d.error || 'Login failed');
+      btn.disabled = false; btn.textContent = 'Sign In →';
+      return;
+    }
+    // Store user info in sessionStorage for admin.html
+    sessionStorage.setItem('adm_user', JSON.stringify(d.user));
+    sessionStorage.setItem('adm_tabs', JSON.stringify(d.tabs));
+
+    if (d.user.force_pw_change) {
+      document.getElementById('force-pw-overlay').classList.add('show');
+      document.getElementById('new-pw').focus();
+      btn.disabled = false; btn.textContent = 'Sign In →';
+    } else {
+      window.location.href = d.redirect || '/admin';
+    }
+  } catch(e) {
+    showErr(errEl, 'Network error. Please try again.');
+    btn.disabled = false; btn.textContent = 'Sign In →';
+  }
+}
+
+async function doChangePw() {
+  var np  = document.getElementById('new-pw').value;
+  var cp  = document.getElementById('confirm-pw').value;
+  var err = document.getElementById('pw-err-msg');
+  var btn = document.getElementById('btn-change-pw');
+
+  if (np.length < 8) { showErr(err, 'Password must be at least 8 characters.'); return; }
+  if (np !== cp)     { showErr(err, 'Passwords do not match.'); return; }
+
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    var r = await fetch('/api/admin/auth/change-password', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({new_password: np})
+    });
+    var d = await r.json();
+    if (r.ok) {
+      var user = JSON.parse(sessionStorage.getItem('adm_user')||'{}');
+      user.force_pw_change = 0;
+      sessionStorage.setItem('adm_user', JSON.stringify(user));
+      window.location.href = user.role === 'cluster_manager' ? '/cm' : '/admin';
+    } else {
+      showErr(err, d.error || 'Failed to set password');
+      btn.disabled = false; btn.textContent = 'Set Password & Continue →';
+    }
+  } catch(e) {
+    showErr(err, 'Network error.');
+    btn.disabled = false; btn.textContent = 'Set Password & Continue →';
+  }
+}
+
+function showErr(el, msg) {
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+// Auto-focus email
+document.getElementById('email').focus();
+</script>
+</body>
+</html>

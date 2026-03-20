@@ -1,6 +1,6 @@
 // ── LIVENESS STATE ───────────────────────────────────────────
-const BLINK_REQUIRED = 2;
-const EAR_THRESHOLD  = 0.23;  // set just below user's minimum blink EAR
+const BLINK_REQUIRED = 1;
+const EAR_THRESHOLD  = 0.25;  // raised to catch partial blinks
 let _blinks    = 0;
 let _lastEAR   = 1.0;
 let _headTurned = false;
@@ -19,15 +19,16 @@ function _calcEAR(pts, start){
 }
 
 // ── FACE MODAL ───────────────────────────────────────────────
-async function openFace(icId,name,enrolled,clockedIn){
+async function openFace(icId,name,enrolled,clockedIn,actionOverride){
   _resetLiveness();
 
   face.icId=icId; face.icName=name;
-  if(!enrolled)       face.action='ENROLL';
-  else if(clockedIn)  face.action='CLOCK_OUT';
-  else                face.action='CLOCK_IN';
+  if(actionOverride)        face.action=actionOverride;
+  else if(!enrolled)        face.action='ENROLL';
+  else if(clockedIn)        face.action='CLOCK_OUT';
+  else                      face.action='CLOCK_IN';
 
-  const labels={ENROLL:'FACE ENROLMENT',CLOCK_IN:'CLOCK IN',CLOCK_OUT:'CLOCK OUT'};
+  const labels={ENROLL:'FACE ENROLMENT',CLOCK_IN:'CLOCK IN',CLOCK_OUT:'CLOCK OUT',VERIFY_SUBMIT:'VERIFICATION'};
   document.getElementById('face-mode-lbl').textContent=labels[face.action];
   document.getElementById('face-name-lbl').textContent=name;
   document.getElementById('shift-result').style.display='none';
@@ -36,8 +37,10 @@ async function openFace(icId,name,enrolled,clockedIn){
 
   const btn=document.getElementById('btn-face-action');
   btn.disabled=true;
-  btn.textContent=face.action==='ENROLL'?'Enroll Face':face.action==='CLOCK_IN'?'Clock In':'Clock Out';
-  btn.className=`btn ${face.action==='CLOCK_OUT'?'btn-red-solid':face.action==='CLOCK_IN'?'btn-green':'btn-primary'}`;
+  var _btnLabels={ENROLL:'Enroll Face',CLOCK_IN:'Clock In',CLOCK_OUT:'Clock Out',VERIFY_SUBMIT:'Verify & Submit'};
+  btn.textContent=_btnLabels[face.action]||'Submit';
+  var _btnClass={ENROLL:'btn btn-primary',CLOCK_IN:'btn btn-green',CLOCK_OUT:'btn btn-red-solid',VERIFY_SUBMIT:'btn btn-primary'};
+  btn.className=_btnClass[face.action]||'btn btn-primary';
 
   // Enroll skips liveness — this is a new face being registered, not auth
   btn.onclick = (face.action==='ENROLL') ? doFaceAction : doFaceActionWithLiveness;
@@ -53,9 +56,10 @@ async function openFace(icId,name,enrolled,clockedIn){
     vid.srcObject=stream;
     vid.onloadedmetadata=()=>{
       const msgs={
-        ENROLL:'Position face in ring',
-        CLOCK_IN:'Ready — blink twice and turn head to clock in',
-        CLOCK_OUT:'Ready — blink twice and turn head to clock out'
+        ENROLL:'Position face in ring — click Enroll',
+        CLOCK_IN:'Ready — blink twice, turn head · Clock In',
+        CLOCK_OUT:'Ready — blink twice, turn head · Clock Out',
+        VERIFY_SUBMIT:'Ready — blink twice, turn head · Verify & Submit'
       };
       if(face.aiReady){setFaceStatus('idle',msgs[face.action]);btn.disabled=false;}
       else{setFaceStatus('scanning','Loading AI…');const w=setInterval(()=>{if(face.aiReady){clearInterval(w);setFaceStatus('idle',msgs[face.action]);btn.disabled=false;}},500);}

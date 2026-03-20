@@ -23,13 +23,26 @@ async function doLogin() {
 
 async function populateFilters() {
   try {
-    const list=await fetch('/api/stations').then(r=>r.json());
-    // Global station filter
+    const list=await fetch('/api/stations', {credentials:'include'}).then(r=>r.json());
+    // Global station filter — scope to CM's stations if applicable
     const gSel=document.getElementById('global-station');
     const curVal=gSel.value;
-    gSel.innerHTML='<option value="">🏢 All Stations</option>';
-    list.forEach(s=>gSel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);
-    if(curVal) gSel.value=curVal;
+    const cmSt = window._cmStations; // set by auth guard for cluster_manager role
+    if (cmSt && cmSt.length) {
+      // CM user — only show their stations, no "All Stations"
+      gSel.innerHTML='';
+      cmSt.forEach(sc => gSel.innerHTML+=`<option value="${sc}">${sc}</option>`);
+      if (!gSel.value) gSel.value = cmSt[0];
+    } else {
+      gSel.innerHTML='<option value="">🏢 All Stations</option>';
+      list.forEach(s=>gSel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);
+      if(curVal) gSel.value=curVal;
+    }
+
+    // For CM users, scope dropdowns to their assigned stations only
+    const filteredList = (window._cmStations && window._cmStations.length)
+      ? list.filter(s => window._cmStations.indexOf(s.station_code) !== -1)
+      : list;
 
     [document.getElementById('viol-station'),document.getElementById('ul-station'),
      document.getElementById('debit-edit-station-filter'),
@@ -37,16 +50,16 @@ async function populateFilters() {
       if(!sel)return;
       const cv=sel.value;
       sel.innerHTML='<option value="">All Stations</option>';
-      list.forEach(s=>sel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);
+      filteredList.forEach(s=>sel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);
       if(cv) sel.value=cv;
     });
     // Users station filter
     const uSel=document.getElementById('users-station-filter');
-    if(uSel){const cv=uSel.value;uSel.innerHTML='<option value="">All Stations</option>';list.forEach(s=>uSel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);if(cv)uSel.value=cv;}
+    if(uSel){const cv=uSel.value;uSel.innerHTML='<option value="">All Stations</option>';filteredList.forEach(s=>uSel.innerHTML+=`<option value="${s.station_code}">${s.station_code}</option>`);if(cv)uSel.value=cv;}
   } catch(e){}
   try {
     // Populate period selectors (ov-period, deb-period) from config_period
-    const periods=await fetch('/api/admin/periods').then(r=>r.json());
+    const periods=await fetch('/api/admin/periods', {credentials:'include'}).then(r=>r.json());
     const active=periods.find(p=>p.is_active);
     const defaultPL = active ? active.period_label : null;
     ['ov-period'].forEach(sid=>{
@@ -57,7 +70,7 @@ async function populateFilters() {
   } catch(e){}
   try {
     // Populate KMS cycle selector from edsp_cycles (keyed by cycle id, not period_label)
-    const cycles=await fetch('/api/admin/edsp-cycles').then(r=>r.json());
+    const cycles=await fetch('/api/admin/edsp-cycles', {credentials:'include'}).then(r=>r.json());
     if(Array.isArray(cycles)){ _cachedCycles=cycles; if(typeof edspRenderCycles==='function') edspRenderCycles(cycles); }
     const kmsSel=document.getElementById('kms-period'); if(kmsSel && Array.isArray(cycles) && cycles.length){
       kmsSel.innerHTML='';
@@ -153,7 +166,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('edsp-from')?.addEventListener('change',autoFillEdspLabel);
   document.getElementById('edsp-to')?.addEventListener('change',autoFillEdspLabel);
   // Populate legacy station filter
-  fetch('/api/legacy/stations').then(r=>r.json()).then(stations => {
+  fetch('/api/legacy/stations', {credentials:'include'}).then(r=>r.json()).then(stations => {
     window._stations = stations;
     // Legacy data tab filter
     const legSel = document.getElementById('leg-station-filter');
@@ -177,7 +190,7 @@ async function uploadEdspCycle() {
   statusEl.textContent='Checking for existing data…';
 
   // Check if data exists for this label
-  const check=await fetch(`/api/admin/edsp-cycles/check?cycleLabel=${encodeURIComponent(cycleLabel)}`).then(r=>r.json());
+  const check=await fetch(`/api/admin/edsp-cycles/check?cycleLabel=${encodeURIComponent(cycleLabel)}`, {credentials:'include'}).then(r=>r.json());
   if(check.exists){
     if(!confirm(`⚠ Cycle "${cycleLabel}" already has ${check.count} rows. Replace all data?`)) return;
   }
@@ -185,7 +198,7 @@ async function uploadEdspCycle() {
   statusEl.textContent='Saving file to server…';
   // Upload file to server first via form
   const fd=new FormData(); fd.append('file',edspUploadFile); fd.append('dest','edsp_upload');
-  const upRes=await fetch('/api/admin/upload-file',{method:'POST',body:fd});
+  const upRes=await fetch('/api/admin/upload-file', {method:'POST',body:fd, credentials:'include'});
   if(!upRes.ok){statusEl.textContent='File upload failed.';return;}
   const {filePath}=await upRes.json();
 
@@ -223,7 +236,7 @@ function populateDebStations() {
   const stations = window._stations || [];
   if (!stations.length) {
     // fetch now if not yet loaded
-    fetch('/api/legacy/stations').then(r=>r.json()).then(sts => {
+    fetch('/api/legacy/stations', {credentials:'include'}).then(r=>r.json()).then(sts => {
       window._stations = sts;
       _fillDebStations(sts);
     }).catch(()=>{});
@@ -272,7 +285,7 @@ async function uploadDebEntries() {
   const fd = new FormData();
   fd.append('file', debAdmFile);
   try {
-    const res = await fetch('/api/admin/debit-upload', {method:'POST', body:fd});
+    const res = await fetch('/api/admin/debit-upload', {method:'POST', body:fd, credentials:'include'});
     const text = await res.text();
     let d;
     try { d = JSON.parse(text); }

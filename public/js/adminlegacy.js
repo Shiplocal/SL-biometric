@@ -7,7 +7,7 @@ let _legPage      = 1;
 
 async function loadLegacyTab() {
   try {
-    const t = await fetch('/api/legacy/test').then(r=>r.json());
+    const t = await fetch('/api/legacy/test', {credentials:'include'}).then(r=>r.json());
     const el = document.getElementById('legacy-conn-status');
     if (t.connected) {
       el.textContent = `✅ Live DB — ${t.stores} stations · ${t.ics} ICs · ${t.users} users`;
@@ -41,7 +41,7 @@ async function runLegacySync() {
   statusEl.textContent = 'Copying stations, staff, config_whic from legacy…';
   statusEl.style.background = 'var(--amber-bg)'; statusEl.style.color = 'var(--amber-d)';
   try {
-    const d = await fetch('/api/admin/legacy-sync', {method:'POST'}).then(r=>r.json());
+    const d = await fetch('/api/admin/legacy-sync', {method:'POST', credentials:'include'}).then(r=>r.json());
     if (d.success) {
       statusEl.textContent = `✅ Sync done — ${d.stations} stations · ${d.staff} staff · ${d.config_whic} ICs updated${d.errors.length?' · '+d.errors.length+' errors':''}`;
       statusEl.style.background = 'var(--green-bg)'; statusEl.style.color = 'var(--green-d)';
@@ -78,11 +78,6 @@ function legacySubTab(tab) {
 
 // ── ALL-TABLES PANEL ─────────────────────────────────────────
 async function _legRenderAllTablesPanel() {
-  const head = document.getElementById('leg-head');
-  const body = document.getElementById('leg-body');
-  head.innerHTML = '';
-  body.innerHTML = '';
-
   // Replace the table area with our custom two-pane layout
   const tblWrap = document.querySelector('#t-legacy .tbl-wrap');
   if (!tblWrap) return;
@@ -126,7 +121,7 @@ async function _legLoadTableList() {
   const listBody = document.getElementById('leg-table-list-body');
   if (!listBody) return;
   try {
-    const data = await fetch('/api/legacy/all-tables').then(r=>r.json());
+    const data = await fetch('/api/legacy/all-tables', {credentials:'include'}).then(r=>r.json());
     _legAllTables = Array.isArray(data) ? data : [];
     const visible = _legAllTables
       .filter(t => t.rows > 0)
@@ -156,7 +151,7 @@ async function _legSyncTables() {
   btn.textContent = 'Syncing…'; btn.disabled = true;
   listBody.innerHTML = `<div style="padding:14px 12px;font-size:.78rem;color:var(--text-2)">Copying all legacy tables…<br>This may take a minute.</div>`;
   try {
-    const d = await fetch('/api/legacy/sync-tables', {method:'POST'}).then(r=>r.json());
+    const d = await fetch('/api/legacy/sync-tables', {method:'POST', credentials:'include'}).then(r=>r.json());
     if (d.success) {
       toast(`✓ Synced ${d.synced}/${d.total} tables from legacy DB`, 'success');
       await _legLoadTableList();
@@ -194,7 +189,7 @@ async function _legLoadTablePage() {
   if (search) qp.set('search', search);
 
   try {
-    const d = await fetch(`/api/legacy/table/${_legCurTable}?${qp}`).then(r=>r.json());
+    const d = await fetch(`/api/legacy/table/${_legCurTable}?${qp}`, {credentials:'include'}).then(r=>r.json());
     if (d.error) { content.innerHTML = `<div style="padding:20px;color:var(--red-d)">${d.error}</div>`; return; }
 
     countEl.textContent = `${d.total.toLocaleString('en-IN')} rows total`;
@@ -392,9 +387,76 @@ function legacyFilterTable() {
 }
 
 // ── TEST FLAGS (lives here for historical reasons) ───────────
+const FLAG_META = {
+  bypassFace:       { label: 'Bypass Face Verification', desc: 'Skip face scan on clock-in/out and debit/advance submission. For testing without a camera.' },
+  bypassMachine:    { label: 'Bypass Machine Check',     desc: 'Allow punch-in without a registered biometric machine. For testing on non-station devices.' },
+  skipMidnightClose:{ label: 'Skip Midnight Auto-Close', desc: 'Prevent the midnight job from auto-closing open shifts. Leave OFF in production.' }
+};
+
+async function loadRecentSubmissions() {
+  const wrap = document.getElementById('recent-submissions');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text-3);font-size:.8rem">Loading…</div>';
+  try {
+    const rows = await fetch('/api/admin/recent-submissions', {credentials:'include'}).then(r=>r.json());
+    if (!rows.length) {
+      wrap.innerHTML = '<div style="color:var(--text-3);font-size:.8rem;padding:8px 0">No submitted entries found.</div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:.78rem;margin-top:4px">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border)">
+            <th style="text-align:left;padding:6px 8px;color:var(--text-3);font-size:.7rem;text-transform:uppercase">Station</th>
+            <th style="text-align:left;padding:6px 8px;color:var(--text-3);font-size:.7rem;text-transform:uppercase">Module</th>
+            <th style="text-align:left;padding:6px 8px;color:var(--text-3);font-size:.7rem;text-transform:uppercase">Period</th>
+            <th style="text-align:left;padding:6px 8px;color:var(--text-3);font-size:.7rem;text-transform:uppercase">Submitted At</th>
+            <th style="padding:6px 8px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 8px;font-family:monospace;font-weight:600">${r.station_code}</td>
+              <td style="padding:6px 8px"><span style="background:var(--blue-bg);color:var(--blue-d);padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:600">${r.module}</span></td>
+              <td style="padding:6px 8px;font-family:monospace;font-size:.75rem">${r.period_label}</td>
+              <td style="padding:6px 8px;color:var(--text-3);font-size:.75rem">${r.submitted_at ? new Date(r.submitted_at).toLocaleString('en-IN') : '—'}</td>
+              <td style="padding:6px 8px;text-align:right">
+                <button class="btn btn-red btn-sm" onclick="_resetSubmission('${r.station_code}','${r.module}','${r.period_label}',this)">🗑 Reset</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    wrap.innerHTML = `<div style="color:var(--red-d);font-size:.8rem">Error: ${e.message}</div>`;
+  }
+}
+
+async function _resetSubmission(station, module, periodLabel, btn) {
+  if (!confirm('Reset ' + module + ' submission for ' + station + ' / ' + periodLabel + '?\nThis cannot be undone.')) return;
+  btn.disabled = true; btn.textContent = 'Resetting…';
+  try {
+    const d = await fetch('/api/admin/reset-submission', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({station, module, periodLabel})
+    }).then(r=>r.json());
+    if (d.success) {
+      toast('Reset done — ' + station + ' / ' + module + ' / ' + periodLabel, 'success');
+      loadRecentSubmissions();
+    } else {
+      toast('Reset failed: ' + d.error, 'error');
+      btn.disabled = false; btn.textContent = '🗑 Reset';
+    }
+  } catch(e) {
+    toast('Reset error: ' + e.message, 'error');
+    btn.disabled = false; btn.textContent = '🗑 Reset';
+  }
+}
+
 async function loadTestFlags() {
   try {
-    const flags = await fetch('/api/test-flags').then(r=>r.json());
+    const flags = await fetch('/api/test-flags', {credentials:'include'}).then(r=>r.json());
     document.getElementById('test-flags-wrap').innerHTML = Object.entries(FLAG_META).map(([key, meta]) => {
       const on = !!flags[key];
       return `<div style="display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)">
@@ -449,7 +511,7 @@ async function loadStaffDir() {
   const stSel = document.getElementById('staff-dir-station');
   if (stSel && stSel.options.length === 1) {
     try {
-      const sts = await fetch('/api/stations').then(r=>r.json());
+      const sts = await fetch('/api/stations', {credentials:'include'}).then(r=>r.json());
       sts.forEach(s => {
         const o = document.createElement('option');
         o.value = s.station_code; o.textContent = s.station_code;
@@ -463,7 +525,7 @@ async function loadStaffDir() {
     if (role) params.set('role', role);
     if (status) params.set('status', status);
     if (station) params.set('station', station);
-    _staffDirAll = await fetch('/api/admin/staff-directory?' + params).then(r=>r.json());
+    _staffDirAll = await fetch('/api/admin/staff-directory?' + params).then(r=>r.json(), {credentials:'include'});
     _staffDirFiltered = [..._staffDirAll];
     _staffDirPage = 1;
     const sc = document.getElementById('staff-dir-count');
